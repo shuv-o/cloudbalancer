@@ -3,7 +3,13 @@ import ipaddress
 
 from rest_framework import serializers
 
-from apps.security.models import AuditEvent, LoginAttempt, PanelAccessPolicy
+from apps.security.models import (
+    AuditEvent,
+    BlockedAddress,
+    LoginAttempt,
+    PanelAccessPolicy,
+    TrafficProtectionPolicy,
+)
 
 
 class CidrListField(serializers.ListField):
@@ -93,3 +99,54 @@ class TotpDisableSerializer(serializers.Serializer):
 
 class TotpResetSerializer(serializers.Serializer):
     user_id = serializers.IntegerField()
+
+
+class ProtectionInputSerializer(serializers.Serializer):
+    enabled = serializers.BooleanField(required=False)
+    per_ip_connections = serializers.IntegerField(required=False, min_value=1, max_value=10000)
+    per_ip_requests_per_second = serializers.IntegerField(
+        required=False, min_value=1, max_value=100000
+    )
+    per_ip_burst = serializers.IntegerField(required=False, min_value=0, max_value=100000)
+    client_header_timeout = serializers.IntegerField(required=False, min_value=1, max_value=300)
+    client_body_timeout = serializers.IntegerField(required=False, min_value=1, max_value=300)
+    denylist_enabled = serializers.BooleanField(required=False)
+
+
+class ProtectionOutputSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TrafficProtectionPolicy
+        fields = [
+            "enabled",
+            "per_ip_connections", "per_ip_requests_per_second", "per_ip_burst",
+            "client_header_timeout", "client_body_timeout",
+            "denylist_enabled", "updated_at",
+        ]
+
+
+class BlockedAddressInputSerializer(serializers.Serializer):
+    cidr = serializers.CharField(max_length=64)
+    reason = serializers.ChoiceField(
+        choices=BlockedAddress.Reason.choices, default=BlockedAddress.Reason.MANUAL
+    )
+    note = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    minutes = serializers.IntegerField(
+        required=False, allow_null=True, min_value=1, max_value=525600,
+        help_text="Leave empty for a block that does not expire",
+    )
+
+
+class BlockedAddressOutputSerializer(serializers.ModelSerializer):
+    reason_label = serializers.CharField(source="get_reason_display", read_only=True)
+    created_by_username = serializers.CharField(
+        source="created_by.username", read_only=True, default=None
+    )
+    is_active = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = BlockedAddress
+        fields = [
+            "id", "cidr", "reason", "reason_label", "note",
+            "expires_at", "is_active",
+            "created_by_username", "created_at",
+        ]

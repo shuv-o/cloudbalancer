@@ -22,7 +22,7 @@ from apps.security.models import (
     PanelAccessPolicy,
     TotpDevice,
 )
-from apps.security.services import (
+from apps.security.services import (  # noqa: F401
     SecurityError,
     ip_is_allowed,
     policy_update,
@@ -505,3 +505,241 @@ class PanelRenderTests(TestCase):
         self.domain.save()
 
         self.assertNotIn("listen 443 ssl;", config_render()["05-panel.conf"])
+
+
+class TrafficProtectionTests(TestCase):
+    """
+    Per-address limits.
+
+    These bound what one address can consume. They are not, and are not tested
+    as, a defence against a volumetric flood — by the time that arrives nothing
+    in this codebase is involved.
+    """
+
+    def setUp(self):
+        from apps.backends.services import backend_create, instance_add
+        from apps.routing.services import rule_create
+
+        backend = backend_create(name="api-service")
+        instance_add(backend=backend, address="10.0.1.11", port=8080)
+        self.domain = domain_create(name="api.example.com")
+        rule_create(domain_id=self.domain.id, backend_id=backend.id, match_value="/")
+
+    def test_every_domain_is_bounded_even_with_no_route_limits(self):
+        """
+        Route-level limits are opt-in, so without a floor a domain whose owner
+        never set one would have no protection at all.
+        """
+        from apps.security.models import TrafficProtectionPolicy
+
+        policy = TrafficProtectionPolicy.load()
+        config = config_render()
+
+        self.assertIn("limit_conn_zone $binary_remote_addr zone=per_ip_conn", config["00-maps.conf"])
+        self.assertIn(
+            f"rate={policy.per_ip_requests_per_second}r/s", config["00-maps.conf"]
+        )
+        self.assertIn(
+            f"limit_conn per_ip_conn {policy.per_ip_connections};", config["20-servers.conf"]
+        )
+        self.assertIn("limit_req  zone=per_ip_req", config["20-servers.conf"])
+
+    def test_limits_can_be_turned_off(self):
+        from apps.security.models import TrafficProtectionPolicy
+
+        policy = TrafficProtectionPolicy.load()
+        policy.enabled = False
+        policy.save()
+
+        config = config_render()
+        self.assertNotIn("per_ip_conn", config["00-maps.conf"])
+        self.assertNotIn("limit_conn per_ip_conn", config["20-servers.conf"])
+
+    def test_refused_requests_say_slow_down_rather_than_broken(self):
+        """429 is true and tells a prober less than 503 would."""
+        config = config_render()["00-maps.conf"]
+        self.assertIn("limit_conn_status 429;", config)
+        self.assertIn("limit_req_status  429;", config)
+
+
+class BlocklistTests(TestCase):
+    def setUp(self):
+        from apps.backends.services import backend_create, instance_add
+        from apps.routing.services import rule_create
+
+        backend = backend_create(name="api-service")
+        instance_add(backend=backend, address="10.0.1.11", port=8080)
+        self.domain = domain_create(name="api.example.com")
+        rule_create(domain_id=self.domain.id, backend_id=backend.id, match_value="/")
+
+    def test_a_blocked_range_is_refused_without_a_response(self):
+        from apps.security.services import address_block
+
+        address_block(cidr="203.0.113.0/24", reason="abuse", note="scraper")
+        config = config_render()
+
+        self.assertIn("geo $blocked_client {", config["00-maps.conf"])
+        self.assertIn("203.0.113.0/24 1;", config["00-maps.conf"])
+        # 444 closes the connection without sending anything back.
+        self.assertIn("return 444;", config["20-servers.conf"])
+
+    def test_a_single_address_is_normalised_to_a_range(self):
+        from apps.security.services import address_block
+
+        entry = address_block(cidr="203.0.113.7")
+        self.assertEqual(entry.cidr, "203.0.113.7/32")
+
+    def test_blocking_everything_is_refused(self):
+        from apps.security.services import address_block
+
+        with self.assertRaises(SecurityError) as caught:
+            address_block(cidr="0.0.0.0/0")
+        self.assertIn("take the gateway offline", str(caught.exception))
+
+    def test_blocking_your_own_allowlisted_range_is_refused(self):
+        """
+        The commonest way a blocklist is misused is locking yourself out of the
+        thing you were defending.
+        """
+        from apps.security.services import address_block
+
+        policy = PanelAccessPolicy.load()
+        policy.ip_allowlist = ["203.0.113.0/24"]
+        policy.save()
+
+        with self.assertRaises(SecurityError) as caught:
+            address_block(cidr="203.0.113.0/25")
+        self.assertIn("lock you out", str(caught.exception))
+
+    def test_an_expired_block_stops_being_enforced(self):
+        """Applied at render time, so a lapsed block heals without a sweep."""
+        from apps.security.services import address_block
+
+        entry = address_block(cidr="198.51.100.0/24", minutes=5)
+        self.assertIn("198.51.100.0/24", config_render()["00-maps.conf"])
+
+        entry.expires_at = timezone.now() - timedelta(minutes=1)
+        entry.save()
+
+        self.assertNotIn("198.51.100.0/24", config_render()["00-maps.conf"])
+
+    def test_a_malformed_entry_is_refused_rather_than_rendered(self):
+        from apps.security.services import address_block
+
+        with self.assertRaises(SecurityError):
+            address_block(cidr="not-an-address")
+
+
+class CacheBustingTests(TestCase):
+    """
+    The attack that turns a cache from a shield into a liability.
+
+    A flood carrying random query parameters misses on every request, so the
+    cache passes the entire load through to the backend and adds a disk write
+    per request on the way.
+    """
+
+    def setUp(self):
+        from apps.backends.services import backend_create, instance_add
+
+        self.backend = backend_create(name="static-assets")
+        instance_add(backend=self.backend, address="10.0.1.11", port=8080)
+        self.domain = domain_create(name="cdn.example.com")
+
+    def _render(self, **kwargs):
+        from apps.routing.services import rule_create
+
+        rule_create(
+            domain_id=self.domain.id,
+            backend_id=self.backend.id,
+            match_value="/",
+            cache_enabled=True,
+            **kwargs,
+        )
+        return config_render()["20-servers.conf"]
+
+    def test_the_query_string_is_part_of_the_key_by_default(self):
+        """Correct for anything whose response depends on its parameters."""
+        self.assertIn("$request_method$request_uri", self._render())
+
+    def test_it_can_be_left_out_for_routes_that_ignore_it(self):
+        config = self._render(cache_ignore_query_string=True)
+
+        # $uri excludes the query string; $request_uri includes it.
+        self.assertIn("$request_method$uri", config)
+        self.assertNotIn("$request_method$request_uri", config)
+
+
+class HotPathCostTests(TestCase):
+    """
+    What the protections cost on every proxied request.
+
+    The gateway's whole reason for existing is that it adds under a
+    millisecond, so anything placed on the request path has to justify itself.
+    These assert the two properties that keep that true: a control that is not
+    in use emits nothing at all, and the ones in use stay off the latency path
+    where they can.
+    """
+
+    def setUp(self):
+        from apps.backends.services import backend_create, instance_add
+        from apps.routing.services import rule_create
+
+        backend = backend_create(name="api-service")
+        instance_add(backend=backend, address="10.0.1.11", port=8080)
+        self.domain = domain_create(name="api.example.com")
+        rule_create(domain_id=self.domain.id, backend_id=backend.id, match_value="/")
+
+    def test_an_empty_blocklist_costs_nothing(self):
+        """
+        No `geo` table and no `if` when nothing is blocked. An unused control
+        that still ran per request would be pure overhead.
+        """
+        config = config_render()
+
+        self.assertNotIn("geo $blocked_client", config["00-maps.conf"])
+        self.assertNotIn("$blocked_client", config["20-servers.conf"])
+        self.assertNotIn("if (", config["20-servers.conf"])
+
+    def test_disabled_protection_emits_no_directives(self):
+        from apps.security.models import TrafficProtectionPolicy
+
+        policy = TrafficProtectionPolicy.load()
+        policy.enabled = False
+        policy.save()
+
+        config = config_render()
+        self.assertNotIn("limit_req", config["20-servers.conf"])
+        self.assertNotIn("limit_conn", config["20-servers.conf"])
+
+    def test_rate_limits_reject_rather_than_delay(self):
+        """
+        `nodelay` is the latency-correct choice. Without it Nginx holds excess
+        requests back to smooth them to the configured rate, which turns a rate
+        limit into added latency for exactly the traffic it was meant to pass.
+        """
+        from apps.routing.services import rule_create
+
+        rule_create(
+            domain_id=self.domain.id,
+            backend_id=self.domain.rules.first().backend_id,
+            match_value="/limited/",
+            rate_limit_enabled=True,
+        )
+        config = config_render()
+
+        for line in config["20-servers.conf"].splitlines():
+            if "limit_req " in line and "zone=" in line:
+                self.assertIn("nodelay", line, f"rate limit would delay traffic: {line}")
+
+    def test_only_one_directive_is_added_per_request(self):
+        """
+        limit_conn is per connection, so keepalive amortises it across every
+        request on that connection. limit_req is the only per-request addition,
+        and it is one shared-memory lookup.
+        """
+        config = config_render()["20-servers.conf"]
+
+        server_block = config[: config.index("    # / ->")]
+        self.assertEqual(server_block.count("limit_req "), 1)
+        self.assertEqual(server_block.count("limit_conn "), 1)

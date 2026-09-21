@@ -69,6 +69,31 @@ interface AuditEvent {
   created_at: string;
 }
 
+interface Protection {
+  enabled: boolean;
+  per_ip_connections: number;
+  per_ip_requests_per_second: number;
+  per_ip_burst: number;
+  client_header_timeout: number;
+  client_body_timeout: number;
+  denylist_enabled: boolean;
+  blocked_count: number;
+  covers: string[];
+  not_covered: string[];
+}
+
+interface Blocked {
+  id: number;
+  cidr: string;
+  reason: string;
+  reason_label: string;
+  note: string;
+  expires_at: string | null;
+  is_active: boolean;
+  created_by_username: string | null;
+  created_at: string;
+}
+
 interface Attempt {
   id: number;
   username: string;
@@ -393,6 +418,223 @@ function HardeningForm({
   );
 }
 
+function ProtectionForm({
+  protection,
+  onClose,
+  onSaved,
+}: {
+  protection: Protection;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [draft, setDraft] = useState({
+    enabled: protection.enabled,
+    per_ip_connections: protection.per_ip_connections,
+    per_ip_requests_per_second: protection.per_ip_requests_per_second,
+    per_ip_burst: protection.per_ip_burst,
+    denylist_enabled: protection.denylist_enabled,
+  });
+  const toast = useToast();
+
+  const [save, { busy, error }] = useAction(async (event: FormEvent) => {
+    event.preventDefault();
+    await api.patch("/api/v1/security/protection/", draft);
+    toast("Limits saved. Deploying.");
+    onSaved();
+    onClose();
+  });
+
+  return (
+    <Modal
+      title="Per-address limits"
+      subtitle="Applied to every public domain, beneath any tighter limit a route sets for itself."
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn--primary" form="protection-form" disabled={busy}>
+            {busy ? "Saving…" : "Save and deploy"}
+          </button>
+        </>
+      }
+    >
+      <form id="protection-form" onSubmit={save}>
+        {error && (
+          <div className="notice notice--error" style={{ marginBottom: 14 }}>
+            {error.message}
+          </div>
+        )}
+
+        <Check
+          label="Limit what one address can consume"
+          help="Without this, a domain whose routes have no limits of their own has no protection at all."
+          checked={draft.enabled}
+          onChange={(v) => setDraft({ ...draft, enabled: v })}
+        />
+
+        {draft.enabled && (
+          <>
+            <div className="row-2">
+              <Field
+                label="Requests per second"
+                help="Sustained rate allowed from one address."
+              >
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  value={draft.per_ip_requests_per_second}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      per_ip_requests_per_second: Number(e.target.value),
+                    })
+                  }
+                />
+              </Field>
+              <Field
+                label="Burst"
+                help="How far above that a short spike may go before requests get a 429."
+              >
+                <input
+                  className="input"
+                  type="number"
+                  min={0}
+                  value={draft.per_ip_burst}
+                  onChange={(e) => setDraft({ ...draft, per_ip_burst: Number(e.target.value) })}
+                />
+              </Field>
+            </div>
+
+            <Field
+              label="Concurrent connections"
+              help="Low enough to bound a slow-connection attack, high enough not to break an office behind one address."
+            >
+              <input
+                className="input"
+                type="number"
+                min={1}
+                value={draft.per_ip_connections}
+                onChange={(e) =>
+                  setDraft({ ...draft, per_ip_connections: Number(e.target.value) })
+                }
+              />
+            </Field>
+          </>
+        )}
+
+        <Check
+          label="Refuse blocked addresses"
+          help="Closes the connection without a response, before anything else runs."
+          checked={draft.denylist_enabled}
+          onChange={(v) => setDraft({ ...draft, denylist_enabled: v })}
+        />
+      </form>
+    </Modal>
+  );
+}
+
+function BlockForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [draft, setDraft] = useState({
+    cidr: "",
+    reason: "abuse",
+    note: "",
+    minutes: 1440 as number | null,
+  });
+  const toast = useToast();
+
+  const [save, { busy, error }] = useAction(async (event: FormEvent) => {
+    event.preventDefault();
+    await api.post("/api/v1/security/blocked/", draft);
+    toast(`${draft.cidr} is now refused. Deploying.`);
+    onSaved();
+    onClose();
+  });
+
+  return (
+    <Modal
+      title="Refuse an address"
+      subtitle="Connections are closed without a response, so the client learns nothing and the gateway spends almost nothing."
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn--danger" form="block-form" disabled={busy || !draft.cidr}>
+            {busy ? "Blocking…" : "Block"}
+          </button>
+        </>
+      }
+    >
+      <form id="block-form" onSubmit={save}>
+        {error && (
+          <div className="notice notice--error" style={{ marginBottom: 14 }}>
+            {error.message}
+          </div>
+        )}
+
+        <Field
+          label="Address or range"
+          help="A single address like 203.0.113.4, or a range like 203.0.113.0/24."
+        >
+          <input
+            className="input input--mono"
+            value={draft.cidr}
+            placeholder="203.0.113.0/24"
+            onChange={(e) => setDraft({ ...draft, cidr: e.target.value })}
+            autoFocus
+            required
+          />
+        </Field>
+
+        <div className="row-2">
+          <Field label="Reason">
+            <select
+              className="select"
+              value={draft.reason}
+              onChange={(e) => setDraft({ ...draft, reason: e.target.value })}
+            >
+              <option value="abuse">Repeated abuse</option>
+              <option value="scanning">Scanning for vulnerabilities</option>
+              <option value="credentials">Guessing credentials</option>
+              <option value="manual">Blocked by an operator</option>
+            </select>
+          </Field>
+          <Field
+            label="Expires after (minutes)"
+            help="Empty means it never expires. A block that lapses fixes its own mistakes."
+          >
+            <input
+              className="input"
+              type="number"
+              min={1}
+              value={draft.minutes ?? ""}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  minutes: e.target.value ? Number(e.target.value) : null,
+                })
+              }
+            />
+          </Field>
+        </div>
+
+        <Field label="Note">
+          <input
+            className="input"
+            value={draft.note}
+            placeholder="What this address was doing"
+            onChange={(e) => setDraft({ ...draft, note: e.target.value })}
+          />
+        </Field>
+      </form>
+    </Modal>
+  );
+}
+
 export function Security() {
   const { data: policy, reload: reloadPolicy } = useResource<Policy>(
     "/api/v1/security/policy/",
@@ -410,16 +652,32 @@ export function Security() {
     20000,
   );
   const { data: domains } = useResource<Domain[]>("/api/v1/domains/");
+  const { data: protection, reload: reloadProtection } = useResource<Protection>(
+    "/api/v1/security/protection/",
+  );
+  const { data: blocked, reload: reloadBlocked } = useResource<Blocked[]>(
+    "/api/v1/security/blocked/",
+  );
 
   const [publishing, setPublishing] = useState(false);
   const [hardening, setHardening] = useState(false);
+  const [limiting, setLimiting] = useState(false);
+  const [blocking, setBlocking] = useState(false);
   const toast = useToast();
 
   const reloadAll = () => {
     reloadPolicy();
     reloadSummary();
     reloadOperators();
+    reloadProtection();
   };
+
+  const [unblock] = useAction(async (entry: Blocked) => {
+    await api.delete(`/api/v1/security/blocked/${entry.id}/`);
+    toast(`${entry.cidr} is no longer refused.`);
+    reloadBlocked();
+    reloadProtection();
+  });
 
   const [resetFactor] = useAction(async (operator: Operator) => {
     await api.post("/api/v1/security/totp/reset/", { user_id: operator.id });
@@ -442,6 +700,9 @@ export function Security() {
           </p>
         </div>
         <div className="page-actions">
+          <button className="btn" onClick={() => setLimiting(true)}>
+            Traffic limits
+          </button>
           <button className="btn" onClick={() => setHardening(true)}>
             Sign-in settings
           </button>
@@ -678,6 +939,84 @@ export function Security() {
         </Panel>
       </div>
 
+      {protection && (
+        <div className="grid grid--2" style={{ marginBottom: 16 }}>
+          <Panel
+            title="Traffic limits"
+            hint={
+              protection.enabled
+                ? `${protection.per_ip_requests_per_second} req/s and ${protection.per_ip_connections} connections per address`
+                : "No per-address limits — routes are on their own"
+            }
+            flush
+          >
+            <div className="rows">
+              {protection.covers.map((item) => (
+                <Row key={item} state="healthy" columns="minmax(0,1fr)">
+                  <div style={{ fontSize: "0.85rem" }}>{item}</div>
+                </Row>
+              ))}
+              {protection.not_covered.map((item) => (
+                <Row key={item} state="down" columns="minmax(0,1fr)">
+                  <div style={{ fontSize: "0.85rem", color: "var(--text-dim)" }}>{item}</div>
+                </Row>
+              ))}
+            </div>
+          </Panel>
+
+          <Panel
+            title="Refused addresses"
+            hint={
+              protection.blocked_count
+                ? `${protection.blocked_count} active`
+                : "Nothing is being refused"
+            }
+            actions={
+              <button className="btn btn--small" onClick={() => setBlocking(true)}>
+                Block an address
+              </button>
+            }
+            flush
+          >
+            {(blocked ?? []).length === 0 ? (
+              <Empty
+                title="Nothing blocked"
+                body="Connections from a blocked address are closed without a response. fail2ban and CrowdSec can write here through the API."
+              />
+            ) : (
+              <div className="rows">
+                {(blocked ?? []).map((entry) => (
+                  <Row
+                    key={entry.id}
+                    state={entry.is_active ? "down" : "idle"}
+                    columns="minmax(0,1fr) auto auto"
+                  >
+                    <div>
+                      <div className="row__primary">{entry.cidr}</div>
+                      <div className="row__secondary">
+                        {entry.reason_label}
+                        {entry.note && ` · ${entry.note}`}
+                        {entry.expires_at
+                          ? ` · until ${dateTime(entry.expires_at)}`
+                          : " · does not expire"}
+                      </div>
+                    </div>
+                    <Tag tone={entry.is_active ? "down" : "neutral"}>
+                      {entry.is_active ? "refused" : "expired"}
+                    </Tag>
+                    <div className="row__actions">
+                      <button className="btn btn--small" onClick={() => unblock(entry)}>
+                        Unblock
+                      </button>
+                    </div>
+                  </Row>
+                ))}
+              </div>
+            )}
+          </Panel>
+        </div>
+      )}
+
       <Panel
         title="Audit trail"
         hint="Every change, and who made it. Append-only — nothing here can be edited or removed."
@@ -724,6 +1063,24 @@ export function Security() {
           domains={domains}
           onClose={() => setPublishing(false)}
           onSaved={reloadAll}
+        />
+      )}
+
+      {limiting && protection && (
+        <ProtectionForm
+          protection={protection}
+          onClose={() => setLimiting(false)}
+          onSaved={reloadAll}
+        />
+      )}
+
+      {blocking && (
+        <BlockForm
+          onClose={() => setBlocking(false)}
+          onSaved={() => {
+            reloadBlocked();
+            reloadProtection();
+          }}
         />
       )}
 

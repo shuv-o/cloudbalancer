@@ -81,6 +81,17 @@ services:
       nofile:
         soft: 65536
         hard: 65536
+    sysctls:
+      # A SYN flood is answered by the kernel before Nginx is involved at all.
+      # SYN cookies let it keep accepting legitimate connections while the
+      # half-open table is full, which is the whole point of the attack.
+      net.ipv4.tcp_syncookies: 1
+      net.ipv4.tcp_max_syn_backlog: 8192
+      net.core.somaxconn: 8192
+      # Reclaim half-open connections faster, so holding them open is cheaper
+      # to defend than to mount.
+      net.ipv4.tcp_synack_retries: 2
+      net.ipv4.tcp_fin_timeout: 15
 
   # ---------------------------------------------------------------------------
   # Control plane

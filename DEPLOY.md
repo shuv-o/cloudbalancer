@@ -661,3 +661,171 @@ docker compose exec nginx grep -c ' 429 ' /var/log/nginx/panel.access.log
 # Refused by the allowlist
 docker compose exec nginx grep -c ' 403 ' /var/log/nginx/panel.access.log
 ```
+
+---
+
+# Part 4 — Flooding and abuse
+
+## The short answer
+
+This gateway bounds what **one address** can consume. It does not stop a
+volumetric flood, and nothing running on a single machine can.
+
+The distinction is where the traffic dies:
+
+| Attack | Where it is stopped | By what |
+|---|---|---|
+| One host hammering an endpoint | Here | Per-address rate and connection limits |
+| Slowloris, slow POST | Here | Short header and body timeouts |
+| Credential stuffing on the panel | Here | Sign-in rate limit, account lockout, second factor |
+| Scrapers, scanners, known-bad addresses | Here | Blocklist, refused with 444 |
+| Cache-busting query floods | Here | Cache key that ignores the query string |
+| SYN flood | Here, by the kernel | SYN cookies, a larger backlog |
+| **10 Gbit/s of UDP at your address** | **Not here** | Your provider, or a scrubbing service |
+| **100,000 hosts at 1 req/s each** | **Not here** | Upstream WAF, or something that can challenge clients |
+
+The last two matter most and are worth being blunt about. A volumetric flood
+saturates the uplink before a single packet reaches Nginx — there is no
+configuration on this box that participates in the outcome. And a large
+distributed flood staying under the per-address limit looks exactly like a lot
+of ordinary clients, because from here it is indistinguishable from one.
+
+**If you need to survive either, you need something in front of this gateway**
+that has more capacity than the attack: Cloudflare, a provider's scrubbing
+service, or an ISP willing to nullroute upstream. Buy that before tuning
+anything below.
+
+## What is on by default
+
+Per-address limits apply to every public domain, underneath any tighter limit
+a route sets for itself:
+
+- **50 requests per second**, burst 100
+- **64 concurrent connections**
+- **10-second header and body timeouts**
+- **SYN cookies** and an 8192-entry backlog in the Nginx container
+
+Change them on Security → Traffic limits. A domain whose routes never set a
+limit of their own is still covered, which is the point of having a floor.
+
+## What it costs per request
+
+Since the gateway's budget is one millisecond, anything on the request path has
+to earn its place:
+
+| Directive | When it runs | Cost |
+|---|---|---|
+| `limit_conn` | Per **connection**, so keepalive amortises it | Shared-memory lookup |
+| `limit_req` | Per request | One shared-memory lookup under a per-zone lock |
+| `geo` + `if` for the blocklist | Per request, **only when something is blocked** | Radix-tree lookup |
+
+Single-digit microseconds against a 1000 µs budget. Two design choices keep it
+that way, and both are asserted by tests:
+
+**An unused control emits nothing.** With an empty blocklist there is no `geo`
+table and no `if` in the generated config at all — not a check that passes
+quickly, no check.
+
+**Rate limits reject rather than delay.** Every `limit_req` carries `nodelay`.
+Without it Nginx holds excess requests back to smooth them to the configured
+rate, which converts a rate limit into added latency for exactly the traffic it
+was supposed to let through.
+
+Measure it rather than trusting the table:
+
+```bash
+make bench-protection
+```
+
+It runs the same load through the gateway with the protections on and then off,
+and prints the difference at each percentile. A gap that is small at p50 and
+wide at p99 is lock contention on the shared `limit_req` zone — at which point
+raise the per-address rate, or drop the global limit and keep per-route limits
+on the expensive paths only.
+
+## Cache-busting
+
+Worth its own note, because it turns your best defence into your worst
+liability. A flood of `GET /?x=<random>` misses the cache on every request, so
+the cache passes the entire load to the backend *and* writes a file per request
+on the way through.
+
+On routes where the query string does not change the response — static assets,
+mostly — turn on **Cache by path alone** in the route's caching settings. The
+key becomes `$uri` instead of `$request_uri`, and a million distinct query
+strings collapse to one cached object.
+
+Do not turn it on for a search endpoint. `?q=cats` and `?q=dogs` would be
+served the same answer.
+
+## Blocking addresses
+
+Security → Refused addresses, or through the API so that fail2ban or CrowdSec
+can write into it:
+
+```bash
+curl -X POST https://control.shuvoo.com/api/v1/security/blocked/ \
+  -H "Content-Type: application/json" -H "X-CSRFToken: $TOKEN" -b "$COOKIES" \
+  -d '{"cidr":"203.0.113.0/24","reason":"abuse","minutes":1440,"note":"scraper"}'
+```
+
+Blocked addresses get a `444` — the connection closes with no response sent.
+The client learns nothing and the gateway spends almost nothing.
+
+Two guardrails: a block covering the panel's own allowlist is refused, and
+blocks expire by default. The commonest way a blocklist is misused is locking
+yourself out of the thing you were defending.
+
+**Automatic banning is deliberately not built in.** fail2ban and CrowdSec
+already do this properly, with log parsing, decay and shared intelligence; a
+log-tailing loop in Python would be a worse version of both. Point one of them
+at `/var/log/nginx/*.access.log` and have it POST to the endpoint above.
+
+## Is it happening?
+
+```bash
+# Rate-limited requests
+docker compose exec nginx grep -c ' 429 ' /var/log/nginx/access.log
+
+# Refused outright
+docker compose exec nginx grep -c ' 444 ' /var/log/nginx/access.log
+
+# Busiest addresses right now
+docker compose exec nginx awk '{print $1}' /var/log/nginx/access.log \
+  | sort | uniq -c | sort -rn | head -20
+
+# Cache outcomes — a spike in MISS with steady traffic suggests cache-busting
+docker compose exec nginx grep -o 'cache=[A-Z-]*' /var/log/nginx/access.log \
+  | sort | uniq -c | sort -rn
+```
+
+The Overview page shows the same shape: requests climbing while the cache hit
+ratio falls is the signature of a cache-busting flood, and it is visible there
+before it is visible in the backends.
+
+## If you are being flooded right now
+
+In order:
+
+1. **Confirm it is layer 7 and not volumetric.** If `make bench-log` still
+   works and the gateway is responsive, the packets are arriving and Nginx is
+   coping — that is an application-layer problem you can act on. If the machine
+   is unreachable, stop reading and call your provider.
+
+2. **Find the addresses**, with the `awk` one-liner above.
+
+3. **Block the worst ranges**, with an expiry so the block heals itself.
+
+4. **Tighten the per-address rate** on Security → Traffic limits. It deploys in
+   a few seconds and costs one reload.
+
+5. **Turn on cache-by-path** for routes being cache-busted, and raise
+   `cache_min_uses` so one-off URLs are never stored.
+
+6. **Let stale content serve.** Already on: `proxy_cache_use_stale` keeps the
+   cache answering while the backends are struggling, which is exactly when it
+   matters most.
+
+7. **If the sources are too many and too distributed to block**, you have
+   reached the limit of what a single gateway can do. Put a scrubbing service
+   in front of it.

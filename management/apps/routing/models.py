@@ -63,6 +63,16 @@ class RoutingRule(models.Model):
         default=True,
         help_text="Bypass cache when Authorization header or session cookie is present",
     )
+    cache_ignore_query_string = models.BooleanField(
+        default=False,
+        help_text=(
+            "Cache by path alone, ignoring the query string. Without this, a "
+            "flood of requests carrying random query parameters misses on every "
+            "one and hands the whole load straight to the backend -- the cache "
+            "stops being a shield and becomes a liability. Only correct where "
+            "the query string does not change the response."
+        ),
+    )
     cache_min_uses = models.IntegerField(
         default=1,
         help_text=(

@@ -3,9 +3,11 @@ from django.contrib import admin
 from apps.security.models import (
     AccountLock,
     AuditEvent,
+    BlockedAddress,
     LoginAttempt,
     PanelAccessPolicy,
     TotpDevice,
+    TrafficProtectionPolicy,
 )
 
 
@@ -59,3 +61,21 @@ class AuditEventAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+@admin.register(TrafficProtectionPolicy)
+class TrafficProtectionPolicyAdmin(admin.ModelAdmin):
+    list_display = ["__str__", "enabled", "denylist_enabled", "updated_at"]
+
+    def has_add_permission(self, request):
+        return not TrafficProtectionPolicy.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(BlockedAddress)
+class BlockedAddressAdmin(admin.ModelAdmin):
+    list_display = ["cidr", "reason", "expires_at", "created_by", "created_at"]
+    list_filter = ["reason"]
+    search_fields = ["cidr", "note"]

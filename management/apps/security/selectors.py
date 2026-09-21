@@ -7,14 +7,62 @@ from django.utils import timezone
 from apps.security.models import (
     AccountLock,
     AuditEvent,
+    BlockedAddress,
     LoginAttempt,
     PanelAccessPolicy,
     TotpDevice,
+    TrafficProtectionPolicy,
 )
 
 
 def policy_get() -> PanelAccessPolicy:
     return PanelAccessPolicy.load()
+
+
+def protection_get() -> TrafficProtectionPolicy:
+    return TrafficProtectionPolicy.load()
+
+
+def blocked_address_list() -> QuerySet[BlockedAddress]:
+    return BlockedAddress.objects.select_related("created_by")
+
+
+def protection_summary() -> dict:
+    """
+    What is bounded, and what is not.
+
+    The honest part of this is `not_covered`: an operator reading a page full
+    of green ticks should still be told, on that page, that none of it stops a
+    volumetric flood.
+    """
+    policy = TrafficProtectionPolicy.load()
+    active = [entry for entry in BlockedAddress.objects.all() if entry.is_active]
+
+    return {
+        "enabled": policy.enabled,
+        "per_ip_connections": policy.per_ip_connections,
+        "per_ip_requests_per_second": policy.per_ip_requests_per_second,
+        "per_ip_burst": policy.per_ip_burst,
+        "client_header_timeout": policy.client_header_timeout,
+        "client_body_timeout": policy.client_body_timeout,
+        "denylist_enabled": policy.denylist_enabled,
+        "blocked_count": len(active),
+        "covers": [
+            "A single address or small botnet exhausting workers or backends",
+            "Slow-connection attacks that hold sockets open while trickling a request",
+            "Scrapers and brute-force tools running faster than a person would",
+            "Cache-busting floods, on routes told to ignore the query string",
+        ],
+        "not_covered": [
+            "A volumetric flood. Once the uplink is saturated the packets never "
+            "reach this gateway, and nothing configured here is involved.",
+            "A large distributed flood staying under the per-address limit. "
+            "Ten thousand hosts sending one request a second each look like "
+            "ten thousand ordinary clients.",
+            "Anything arriving before this machine: the provider's network, "
+            "the link, and the kernel's own connection table.",
+        ],
+    }
 
 
 def audit_list(*, limit: int = 100, actor_id: int | None = None) -> QuerySet[AuditEvent]:

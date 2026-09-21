@@ -38,6 +38,7 @@ class RoutingRuleInputSerializer(serializers.Serializer):
     cache_ttl = serializers.IntegerField(required=False, default=600, min_value=0)
     cache_bypass_auth = serializers.BooleanField(required=False, default=True)
     cache_min_uses = serializers.IntegerField(required=False, default=1, min_value=1)
+    cache_ignore_query_string = serializers.BooleanField(required=False, default=False)
     cache_key_headers = serializers.ListField(
         child=serializers.CharField(max_length=64), required=False, default=list
     )
@@ -71,7 +72,7 @@ class RoutingRuleOutputSerializer(serializers.ModelSerializer):
             "id", "domain", "domain_name", "backend", "backend_name",
             "match_type", "match_type_label", "match_value", "nginx_location", "priority",
             "cache_enabled", "cache_ttl", "cache_bypass_auth", "cache_min_uses",
-            "cache_key_headers",
+            "cache_ignore_query_string", "cache_key_headers",
             "cache_ignore_upstream_control", "cache_allow_authenticated",
             "strip_prefix", "custom_headers",
             "proxy_buffering", "proxy_read_timeout",

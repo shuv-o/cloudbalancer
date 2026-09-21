@@ -31,6 +31,20 @@
 {% endfor %}
 {%- endmacro %}
 {% macro routes(domain) %}
+{% if blocked_addresses %}
+    # Checked before anything else runs. `if` is discouraged in Nginx, but
+    # `if` with a bare `return` is one of the two uses documented as safe.
+    if ($blocked_client) {
+        return 444;
+    }
+{% endif %}
+{% if protection.enabled %}
+    # The floor beneath any per-route limit. A domain with no rate-limited
+    # route is still bounded.
+    limit_conn per_ip_conn {{ protection.per_ip_connections }};
+    limit_req  zone=per_ip_req burst={{ protection.per_ip_burst }} nodelay;
+{% endif %}
+
     access_log /var/log/nginx/{{ domain.name }}.access.log main buffer=64k flush=5s;
     error_log  /var/log/nginx/{{ domain.name }}.error.log warn;
 
@@ -62,7 +76,14 @@
         chunked_transfer_encoding off;
 {% elif rule.cache_enabled %}
         proxy_cache         gateway_cache;
+{% if rule.cache_ignore_query_string %}
+        # Keyed on the path alone. A flood carrying random query parameters
+        # would otherwise miss on every request and hand the whole load to the
+        # backend, turning the cache from a shield into a liability.
+        proxy_cache_key     "$scheme$host$request_method$uri{{ rule.cache_key_suffix }}";
+{% else %}
         proxy_cache_key     "$scheme$host$request_method$request_uri{{ rule.cache_key_suffix }}";
+{% endif %}
         proxy_cache_methods GET HEAD;
 
         # A fallback for responses carrying no caching headers of their own.

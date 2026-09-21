@@ -319,3 +319,136 @@ class AuditEvent(models.Model):
 
     def __str__(self) -> str:
         return f"{self.actor_name or 'anonymous'} {self.action} {self.path}"
+
+
+class TrafficProtectionPolicy(models.Model):
+    """
+    Per-address limits applied to every public domain. A single row.
+
+    Worth being precise about what this is and is not. It bounds what one
+    address can consume, which stops a single host, a scraper or a small
+    botnet from exhausting workers or backends. It does nothing about a
+    volumetric flood: by the time 10 Gbit/s of packets arrive, the uplink is
+    already full and Nginx never sees them. That problem is solved upstream,
+    by a provider who can absorb it, and no setting here substitutes for one.
+
+    Route-level limits stay available for tighter caps on expensive paths;
+    these are the floor beneath them.
+    """
+
+    enabled = models.BooleanField(
+        default=True,
+        help_text="Apply these limits to every public domain",
+    )
+
+    per_ip_connections = models.IntegerField(
+        default=64,
+        help_text=(
+            "Concurrent connections one address may hold open. Low enough to "
+            "bound a slow-connection attack, high enough not to break a browser "
+            "opening several tabs behind one office address."
+        ),
+    )
+    per_ip_requests_per_second = models.IntegerField(
+        default=50,
+        help_text="Sustained request rate allowed from one address",
+    )
+    per_ip_burst = models.IntegerField(
+        default=100,
+        help_text="How far above that rate a short burst may go before requests are refused",
+    )
+
+    # Slow-request defences. An attacker holding thousands of connections open
+    # while trickling a request costs almost nothing to mount and exhausts a
+    # worker pool, so the timeouts are deliberately short.
+    client_header_timeout = models.IntegerField(
+        default=10,
+        help_text="Seconds allowed to send request headers",
+    )
+    client_body_timeout = models.IntegerField(
+        default=10,
+        help_text="Seconds allowed between chunks of a request body",
+    )
+
+    # Automatic banning is deliberately absent: a log-tailing loop in Python is
+    # a poor imitation of fail2ban or CrowdSec, both of which already do this
+    # properly. The denylist below is the operator's own, and those tools can
+    # write into it.
+    denylist_enabled = models.BooleanField(
+        default=True,
+        help_text="Refuse blocked addresses without a response, before any other work",
+    )
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "traffic protection policy"
+        verbose_name_plural = "traffic protection policy"
+
+    def __str__(self) -> str:
+        if not self.enabled:
+            return "Per-address limits off"
+        return (
+            f"{self.per_ip_requests_per_second} req/s and "
+            f"{self.per_ip_connections} connections per address"
+        )
+
+    @classmethod
+    def load(cls) -> "TrafficProtectionPolicy":
+        policy, _ = cls.objects.get_or_create(pk=1)
+        return policy
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+
+class BlockedAddress(models.Model):
+    """
+    An address or range refused at the gateway.
+
+    Rendered into a `geo` table and answered with 444, which closes the
+    connection without sending a response. An attacker learns nothing and the
+    gateway spends almost nothing.
+
+    Populated by an operator, or by fail2ban and similar through the API.
+    """
+
+    class Reason(models.TextChoices):
+        MANUAL = "manual", "Blocked by an operator"
+        ABUSE = "abuse", "Repeated abuse"
+        SCANNING = "scanning", "Scanning for vulnerabilities"
+        CREDENTIAL_STUFFING = "credentials", "Guessing credentials"
+
+    cidr = models.CharField(
+        max_length=64,
+        unique=True,
+        db_index=True,
+        help_text="A single address, or a range like 203.0.113.0/24",
+    )
+    reason = models.CharField(max_length=20, choices=Reason.choices, default=Reason.MANUAL)
+    note = models.CharField(max_length=255, blank=True, default="")
+    expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Blocks expire unless this is empty, so a mistake heals itself",
+    )
+    created_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="blocked_addresses",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name_plural = "blocked addresses"
+
+    def __str__(self) -> str:
+        return f"{self.cidr} ({self.reason})"
+
+    @property
+    def is_active(self) -> bool:
+        return self.expires_at is None or self.expires_at > timezone.now()

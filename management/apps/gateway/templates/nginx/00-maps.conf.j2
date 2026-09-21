@@ -38,6 +38,44 @@ map $http_upgrade $connection_upgrade {
     ""       "";
 }
 
+{% if protection.enabled %}
+# ---------------------------------------------------------------------------
+# Per-address limits, applied to every public domain.
+#
+# These bound what one address can consume. They stop a single host, a scraper
+# or a small botnet from exhausting workers or backends, and they cost one hash
+# lookup per request.
+#
+# They do nothing about a volumetric flood. By the time enough packets arrive to
+# saturate the uplink, none of them have reached Nginx and no setting in this
+# file is involved. That problem is answered upstream, by a provider who can
+# absorb it.
+# ---------------------------------------------------------------------------
+limit_conn_zone $binary_remote_addr zone=per_ip_conn:16m;
+limit_req_zone  $binary_remote_addr zone=per_ip_req:16m rate={{ protection.per_ip_requests_per_second }}r/s;
+
+# 429 rather than 503: it says "you, slow down" instead of "this service is
+# broken", which is both true and less useful to someone probing for capacity.
+limit_conn_status 429;
+limit_req_status  429;
+{% endif %}
+
+{% if blocked_addresses %}
+# ---------------------------------------------------------------------------
+# Refused addresses.
+#
+# Answered with 444, which closes the connection without sending a response.
+# The client learns nothing, and the gateway spends almost nothing.
+# ---------------------------------------------------------------------------
+geo $blocked_client {
+    default 0;
+{% for entry in blocked_addresses %}
+    {{ entry.cidr }} 1;{% if entry.note %}  # {{ entry.note }}{% endif %}
+
+{% endfor %}
+}
+{% endif %}
+
 {% if rate_limited_rules %}
 # ---------------------------------------------------------------------------
 # Per-route rate limiting, keyed on client address.

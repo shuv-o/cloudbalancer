@@ -430,3 +430,81 @@ def audit_record(
         user_agent=user_agent[:512],
         summary=summary[:255],
     )
+
+
+# ---------------------------------------------------------------------------
+# Traffic protection
+# ---------------------------------------------------------------------------
+
+def protection_update(*, policy, data: dict):
+    """Change the per-address limits applied to every public domain."""
+    fields = [
+        "enabled",
+        "per_ip_connections",
+        "per_ip_requests_per_second",
+        "per_ip_burst",
+        "client_header_timeout",
+        "client_body_timeout",
+        "denylist_enabled",
+    ]
+    instance, _ = model_update(instance=policy, fields=fields, data=data)
+    return instance
+
+
+def address_block(
+    *,
+    cidr: str,
+    reason: str = "manual",
+    note: str = "",
+    minutes: int | None = None,
+    actor=None,
+):
+    """
+    Refuse an address or range at the gateway.
+
+    Refuses to block the caller's own network, because the commonest way this
+    feature is misused is locking yourself out of the thing you were defending.
+    """
+    from datetime import timedelta
+
+    from apps.security.models import BlockedAddress, PanelAccessPolicy
+
+    try:
+        network = ipaddress.ip_network(cidr.strip(), strict=False)
+    except ValueError as exc:
+        raise SecurityError(
+            f"'{cidr}' is not an address or range. Use 203.0.113.4 or 203.0.113.0/24."
+        ) from exc
+
+    if network.prefixlen == 0:
+        raise SecurityError("Blocking every address would take the gateway offline.")
+
+    # A block covering the panel's own allowlist would cut off the operators.
+    for allowed in PanelAccessPolicy.load().normalised_allowlist:
+        allowed_network = ipaddress.ip_network(allowed)
+        if network.version == allowed_network.version and network.overlaps(allowed_network):
+            raise SecurityError(
+                f"{network} overlaps {allowed}, which is allowed to reach the control "
+                "panel. Blocking it would lock you out."
+            )
+
+    entry, created = BlockedAddress.objects.update_or_create(
+        cidr=str(network),
+        defaults={
+            "reason": reason,
+            "note": note,
+            "expires_at": timezone.now() + timedelta(minutes=minutes) if minutes else None,
+            "created_by": actor if (actor and actor.is_authenticated) else None,
+        },
+    )
+    logger.warning("Blocked %s (%s)%s", network, reason, "" if created else ", updated")
+    return entry
+
+
+def address_unblock(*, cidr: str) -> bool:
+    from apps.security.models import BlockedAddress
+
+    deleted, _ = BlockedAddress.objects.filter(cidr=cidr).delete()
+    if deleted:
+        logger.info("Unblocked %s", cidr)
+    return bool(deleted)

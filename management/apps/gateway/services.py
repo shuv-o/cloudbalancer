@@ -129,6 +129,7 @@ def _rule_context(rule: RoutingRule) -> dict:
         "cache_enabled": rule.cache_enabled,
         "cache_ttl": rule.cache_ttl,
         "cache_min_uses": rule.cache_min_uses,
+        "cache_ignore_query_string": rule.cache_ignore_query_string,
         "cache_bypass_auth": rule.cache_bypass_auth,
         "cache_ignore_upstream_control": rule.cache_ignore_upstream_control,
         "cache_key_suffix": _cache_key_suffix(rule.cache_key_headers),
@@ -186,8 +187,42 @@ def _active_rules_by_domain() -> dict[int, list[dict]]:
     return grouped
 
 
+def _protection_context() -> dict:
+    """Per-address limits, as the templates want them."""
+    from apps.security.models import TrafficProtectionPolicy
+
+    policy = TrafficProtectionPolicy.load()
+    return {
+        "enabled": policy.enabled,
+        "per_ip_connections": policy.per_ip_connections,
+        "per_ip_requests_per_second": policy.per_ip_requests_per_second,
+        "per_ip_burst": policy.per_ip_burst,
+    }
+
+
+def _blocked_addresses() -> list[dict]:
+    """
+    Addresses to refuse, skipping any whose block has expired.
+
+    Expiry is applied here rather than by a scheduled cleanup, so a block that
+    has run out stops being enforced at the next deploy whether or not anything
+    swept the table.
+    """
+    from apps.security.models import BlockedAddress, TrafficProtectionPolicy
+
+    if not TrafficProtectionPolicy.load().denylist_enabled:
+        return []
+
+    now = timezone.now()
+    return [
+        {"cidr": entry.cidr, "note": entry.note}
+        for entry in BlockedAddress.objects.all()
+        if entry.expires_at is None or entry.expires_at > now
+    ]
+
+
 def render_maps(*, rules_by_domain: dict[int, list[dict]], domains: dict[int, Domain]) -> str:
-    """Render the shared http-context file: maps and rate-limit zones."""
+    """Render the shared http-context file: maps, limits and the blocklist."""
     rate_limited, header_routed = [], []
 
     for domain_id, rules in rules_by_domain.items():
@@ -204,6 +239,8 @@ def render_maps(*, rules_by_domain: dict[int, list[dict]], domains: dict[int, Do
     return _jinja_env.get_template("00-maps.conf.j2").render(
         rate_limited_rules=rate_limited,
         header_routed_rules=header_routed,
+        protection=_protection_context(),
+        blocked_addresses=_blocked_addresses(),
     )
 
 
@@ -331,6 +368,8 @@ def render_servers(*, rules_by_domain: dict[int, list[dict]], domains: dict[int,
     return _jinja_env.get_template("20-servers.conf.j2").render(
         domains=domain_contexts,
         acme_webroot=settings.ACME_WEBROOT_DIR,
+        protection=_protection_context(),
+        blocked_addresses=_blocked_addresses(),
     )
 
 

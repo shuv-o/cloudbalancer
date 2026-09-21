@@ -267,6 +267,27 @@ latency, throughput, cache behaviour and per-instance load.
 
 ---
 
+## Flooding and abuse
+
+Per-address limits apply to every public domain: 50 requests per second, 64
+concurrent connections, short header and body timeouts, and SYN cookies in the
+gateway container. There is a blocklist that answers with `444`, and routes can
+be told to cache by path alone so a query-string flood cannot bust the cache.
+
+All of that bounds what **one address** can consume. None of it stops a
+volumetric flood — once the uplink is saturated the packets never reach this
+machine, and nothing configured here is involved. A large distributed flood
+staying under the per-address limit is equally out of reach, because from here
+it is indistinguishable from a lot of ordinary clients. Both need a scrubbing
+service in front of the gateway. See [DEPLOY.md](DEPLOY.md).
+
+The protections cost single-digit microseconds per request: `limit_conn` is per
+connection and amortised by keepalive, `limit_req` is one shared-memory lookup,
+and the blocklist emits nothing at all when it is empty. Every rate limit uses
+`nodelay`, so excess requests are refused rather than delayed — a limiter that
+queues would convert itself into the latency it was meant to prevent. Measure
+it with `make bench-protection`.
+
 ## Known trade-offs
 
 **One gateway is a single point of failure.** One A record, one machine. The HA

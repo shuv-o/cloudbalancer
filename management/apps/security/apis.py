@@ -7,6 +7,9 @@ from rest_framework.views import APIView
 
 from apps.security.selectors import (
     audit_list,
+    blocked_address_list,
+    protection_get,
+    protection_summary,
     login_attempt_list,
     operator_list,
     policy_get,
@@ -14,6 +17,10 @@ from apps.security.selectors import (
 )
 from apps.security.serializers import (
     AuditEventOutputSerializer,
+    BlockedAddressInputSerializer,
+    BlockedAddressOutputSerializer,
+    ProtectionInputSerializer,
+    ProtectionOutputSerializer,
     LoginAttemptOutputSerializer,
     PolicyInputSerializer,
     PolicyOutputSerializer,
@@ -23,7 +30,10 @@ from apps.security.serializers import (
 )
 from apps.security.services import (
     SecurityError,
+    address_block,
+    address_unblock,
     policy_update,
+    protection_update,
     totp_begin_enrollment,
     totp_confirm_enrollment,
     totp_disable,
@@ -220,3 +230,97 @@ class TotpStatusApi(APIView):
             "recovery_codes_remaining": device.recovery_codes_remaining if device else 0,
             "last_used_at": device.last_used_at if device else None,
         })
+
+
+# ---------------------------------------------------------------------------
+# Traffic protection
+# ---------------------------------------------------------------------------
+
+class ProtectionApi(APIView):
+    """
+    GET   /api/v1/security/protection/  — per-address limits, and their limits
+    PATCH /api/v1/security/protection/  — change them, then redeploy
+    """
+    permission_classes = [IsSuperuser]
+
+    def get(self, request):
+        return Response({
+            **ProtectionOutputSerializer(protection_get()).data,
+            **protection_summary(),
+        })
+
+    def patch(self, request):
+        serializer = ProtectionInputSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+
+        policy = protection_update(policy=protection_get(), data=serializer.validated_data)
+
+        from apps.gateway.tasks import request_config_deploy
+        request_config_deploy(user_id=request.user.pk)
+
+        return Response({
+            **ProtectionOutputSerializer(policy).data,
+            **protection_summary(),
+        })
+
+
+class BlockedAddressApi(APIView):
+    """
+    GET  /api/v1/security/blocked/  — addresses refused at the gateway
+    POST /api/v1/security/blocked/  — refuse one
+
+    Shaped so fail2ban, CrowdSec or a script can write into it. Automatic
+    banning is deliberately not built in here: those tools already do it
+    properly, and a log-tailing loop would be a poor imitation.
+    """
+    permission_classes = [IsSuperuser]
+
+    def get(self, request):
+        return Response(
+            BlockedAddressOutputSerializer(blocked_address_list(), many=True).data
+        )
+
+    def post(self, request):
+        serializer = BlockedAddressInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            entry = address_block(
+                cidr=data["cidr"],
+                reason=data["reason"],
+                note=data.get("note", ""),
+                minutes=data.get("minutes"),
+                actor=request.user,
+            )
+        except SecurityError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        from apps.gateway.tasks import request_config_deploy
+        request_config_deploy(user_id=request.user.pk)
+
+        return Response(
+            BlockedAddressOutputSerializer(entry).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class BlockedAddressDetailApi(APIView):
+    """
+    DELETE /api/v1/security/blocked/<id>/  — stop refusing an address
+    """
+    permission_classes = [IsSuperuser]
+
+    def delete(self, request, blocked_id):
+        from apps.security.models import BlockedAddress
+
+        entry = BlockedAddress.objects.filter(pk=blocked_id).first()
+        if entry is None:
+            return Response({"error": "Not blocked."}, status=status.HTTP_404_NOT_FOUND)
+
+        address_unblock(cidr=entry.cidr)
+
+        from apps.gateway.tasks import request_config_deploy
+        request_config_deploy(user_id=request.user.pk)
+
+        return Response(status=status.HTTP_204_NO_CONTENT)

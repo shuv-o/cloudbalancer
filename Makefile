@@ -181,3 +181,6 @@ panel-status: ## Show how the panel is currently exposed
 	docker compose exec django python manage.py shell -c \
 		"from apps.security.selectors import security_summary; \
 		 import json; print(json.dumps(security_summary(), indent=2, default=str))"
+
+bench-protection: ## Measure what the per-address protections cost per request
+	./benchmarks/protection_overhead.sh

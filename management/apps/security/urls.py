@@ -2,9 +2,12 @@ from django.urls import path
 
 from apps.security.apis import (
     AuditApi,
+    BlockedAddressApi,
+    BlockedAddressDetailApi,
     LoginAttemptApi,
     OperatorApi,
     PolicyApi,
+    ProtectionApi,
     SecuritySummaryApi,
     TotpConfirmApi,
     TotpDisableApi,
@@ -16,6 +19,9 @@ from apps.security.apis import (
 urlpatterns = [
     path("policy/", PolicyApi.as_view(), name="security-policy"),
     path("summary/", SecuritySummaryApi.as_view(), name="security-summary"),
+    path("protection/", ProtectionApi.as_view(), name="security-protection"),
+    path("blocked/", BlockedAddressApi.as_view(), name="security-blocked"),
+    path("blocked/<int:blocked_id>/", BlockedAddressDetailApi.as_view(), name="security-blocked-detail"),
     path("audit/", AuditApi.as_view(), name="security-audit"),
     path("attempts/", LoginAttemptApi.as_view(), name="security-attempts"),
     path("operators/", OperatorApi.as_view(), name="security-operators"),

@@ -1,0 +1,42 @@
+server {
+    listen 8080;
+    server_name _;
+    access_log off;
+
+    add_header X-Instance "${INSTANCE_NAME}" always;
+
+    # Health probe target for the gateway's checker.
+    location = /health {
+        default_type application/json;
+        return 200 '{"status":"ok","instance":"${INSTANCE_NAME}"}';
+    }
+
+    # The measurement endpoint. Explicitly uncacheable, so every request goes
+    # end to end and the timing reflects the full proxy path.
+    location = /bench {
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        return 200 '{"ok":true,"instance":"${INSTANCE_NAME}"}';
+    }
+
+    # Cacheable, with the headers a real backend would send. Used to check that
+    # the gateway honours upstream Cache-Control and revalidates with ETag.
+    location = /cacheable {
+        default_type application/json;
+        add_header Cache-Control "public, max-age=60" always;
+        add_header ETag '"bench-v1"' always;
+        add_header Vary "Accept-Encoding" always;
+        return 200 '{"ok":true,"cacheable":true,"instance":"${INSTANCE_NAME}"}';
+    }
+
+    # Names the instance that answered, so load balancing can be verified.
+    location = /whoami {
+        default_type text/plain;
+        return 200 "${INSTANCE_NAME}\n";
+    }
+
+    location / {
+        default_type application/json;
+        return 200 '{"instance":"${INSTANCE_NAME}","path":"$request_uri"}';
+    }
+}

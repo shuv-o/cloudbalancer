@@ -1,0 +1,34 @@
+# =============================================================================
+# Benchmark topology, layered on top of the main stack:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.bench.yml up -d
+#
+# Adds mock backends that return a fixed response with no work behind it. That
+# is the point: with backend processing near zero, the difference between
+# direct-to-backend and through-the-gateway is the gateway's own overhead and
+# nothing else.
+# =============================================================================
+services:
+  mock-a:
+    build: ./benchmarks/mock_backend
+    container_name: proxy-balancer-mock-a
+    environment:
+      INSTANCE_NAME: mock-a
+    ports: ["9101:8080"]
+    networks: [gateway]
+
+  mock-b:
+    build: ./benchmarks/mock_backend
+    container_name: proxy-balancer-mock-b
+    environment:
+      INSTANCE_NAME: mock-b
+    ports: ["9102:8080"]
+    networks: [gateway]
+
+  mock-c:
+    build: ./benchmarks/mock_backend
+    container_name: proxy-balancer-mock-c
+    environment:
+      INSTANCE_NAME: mock-c
+    ports: ["9103:8080"]
+    networks: [gateway]

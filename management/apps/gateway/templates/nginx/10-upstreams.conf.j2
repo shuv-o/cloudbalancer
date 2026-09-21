@@ -1,0 +1,34 @@
+{# ---------------------------------------------------------------------------
+   One upstream block per active backend.
+   --------------------------------------------------------------------------- #}
+{% for backend in backends %}
+# {{ backend.name }} — {{ backend.lb_method }}, {{ backend.serving_count }}/{{ backend.total_count }} serving
+upstream {{ backend.upstream_name }} {
+{% if backend.lb_method == "least_conn" %}
+    # `zone` is what makes this accurate: without shared memory each worker
+    # counts only its own connections and picks a locally-optimal server.
+    zone {{ backend.upstream_name }} 64k;
+    least_conn;
+{% elif backend.lb_method == "ip_hash" %}
+    zone {{ backend.upstream_name }} 64k;
+    ip_hash;
+{% else %}
+    zone {{ backend.upstream_name }} 64k;
+{% endif %}
+
+{% for inst in backend.instances %}
+    server {{ inst.netloc }} weight={{ inst.weight }} max_fails={{ inst.max_fails }} fail_timeout={{ inst.fail_timeout }}s{% if inst.is_draining %} down{% endif %};{% if inst.is_draining %}  # drained after {{ inst.consecutive_failures }} failed probes{% endif %}
+
+{% endfor %}
+
+    # Persistent connections to the backend. Without these every request pays
+    # a TCP handshake, which is the single largest avoidable cost on the hop.
+    keepalive          {{ backend.keepalive_connections }};
+    keepalive_requests {{ backend.keepalive_requests }};
+    keepalive_timeout  {{ backend.keepalive_timeout }}s;
+}
+
+{% endfor %}
+{% if not backends %}
+# No active backends with instances. Add one in the control panel.
+{% endif %}

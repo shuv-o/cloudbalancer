@@ -1,0 +1,32 @@
+# Generated Nginx configuration. The database is the source of truth; these
+# files are rendered from it on every deploy.
+gateway/nginx/conf.d/00-maps.conf
+gateway/nginx/conf.d/10-upstreams.conf
+gateway/nginx/conf.d/20-servers.conf
+gateway/nginx/conf.d/.backups/
+
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.sqlite3
+staticfiles/
+
+# Node
+node_modules/
+frontend/dist/
+.vite/
+
+# Benchmarks
+benchmarks/results/*
+!benchmarks/results/.gitkeep
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+tsconfig.tsbuildinfo

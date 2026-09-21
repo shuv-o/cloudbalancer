@@ -1,0 +1,69 @@
+{# ---------------------------------------------------------------------------
+   Shared http-context state: maps, rate-limit zones, header-routing tables.
+   Rendered by gateway/services.py. Loaded before upstreams and servers because
+   conf.d/*.conf is included in filename order.
+   --------------------------------------------------------------------------- #}
+
+# ---------------------------------------------------------------------------
+# Cache status, surfaced to clients as X-Cache-Status.
+#
+# $upstream_cache_status is empty on routes that do not cache at all, which
+# would emit a blank header and leave you unsure whether caching was off or
+# the header was missing. "-" says "this route does not cache" out loud.
+# ---------------------------------------------------------------------------
+map $upstream_cache_status $cache_status_display {
+    default  $upstream_cache_status;
+    ""       "-";
+}
+
+# ---------------------------------------------------------------------------
+# Accept-Encoding, normalised for use in cache keys.
+#
+# Clients send dozens of spellings of the same three encodings. Keying on the
+# raw header shatters one cached object into one entry per client string; this
+# collapses it back to three.
+# ---------------------------------------------------------------------------
+map $http_accept_encoding $encoding_key {
+    default   "";
+    "~*zstd"  "zstd";
+    "~*br"    "br";
+    "~*gzip"  "gzip";
+}
+
+# ---------------------------------------------------------------------------
+# Connection header for upgrade-capable routes (WebSocket, SSE).
+# ---------------------------------------------------------------------------
+map $http_upgrade $connection_upgrade {
+    default  upgrade;
+    ""       "";
+}
+
+{% if rate_limited_rules %}
+# ---------------------------------------------------------------------------
+# Per-route rate limiting, keyed on client address.
+# ---------------------------------------------------------------------------
+{% for rule in rate_limited_rules %}
+limit_req_zone $binary_remote_addr zone=rl_{{ rule.slug }}:10m rate={{ rule.rate_limit_rps }}r/s;
+{% endfor %}
+{% endif %}
+
+{% if header_routed_rules %}
+# ---------------------------------------------------------------------------
+# Header-based backend selection.
+#
+# Each map resolves to an upstream block name. Nginx matches a variable
+# proxy_pass against declared upstreams before it considers DNS, so these keep
+# the upstream keepalive pool; the cost is one hash lookup per request.
+# ---------------------------------------------------------------------------
+{% for rule in header_routed_rules %}
+# {{ rule.domain_name }}{{ rule.match_value }} — switches on {{ rule.header_name }}
+map {{ rule.header_variable }} $target_{{ rule.slug }} {
+    default  {{ rule.default_upstream }};
+{% for route in rule.header_routes %}
+    "{{ route.header_value }}"  {{ route.upstream_name }};{% if route.description %}  # {{ route.description }}{% endif %}
+
+{% endfor %}
+}
+
+{% endfor %}
+{% endif %}

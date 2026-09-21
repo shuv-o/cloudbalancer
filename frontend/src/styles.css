@@ -1,0 +1,1104 @@
+/* ===========================================================================
+   Gateway Console
+
+   The subject is rack-mounted network equipment, and the design borrows its
+   vocabulary: a status rail down the left edge of every row like an LED strip,
+   hairline divisions like a patch panel, monospace reserved strictly for
+   machine data -- addresses, latencies, header names -- and never for labels.
+
+   Colour is a deep slate-navy rather than a tinted black, with amber reserved
+   for traffic and signal. Health states use mint and coral: desaturated enough
+   to sit in the palette, distinct enough that an operator reads them without
+   thinking.
+   =========================================================================== */
+
+:root {
+  color-scheme: dark;
+
+  --ink-900: #0e1420;
+  --ink-850: #111826;
+  --ink-800: #151d2c;
+  --ink-750: #1a2333;
+  --ink-700: #1e2839;
+  --line: #27324a;
+  --line-soft: #1f293c;
+  --wire: #3a4761;
+
+  --text: #dee5f0;
+  --text-dim: #95a6c0;
+  --text-faint: #64748f;
+
+  --signal: #e8b04b;
+  --signal-dim: #8a6a2d;
+  --signal-solid: #e8b04b;
+  --signal-ink: #1a1203;
+  --hit: #5ec8a8;
+  --warn: #e8874b;
+  --down: #e8646b;
+  --cool: #6ba8e8;
+
+  --radius: 5px;
+  --rail: 3px;
+
+  --font-ui: "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  --step-0: 0.875rem;
+  --step-1: 1rem;
+  --step-2: 1.25rem;
+  --step-3: 1.625rem;
+  --step-4: 2.25rem;
+  --step-5: 3rem;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --ink-900: #f6f7f9;
+  --ink-850: #ffffff;
+  --ink-800: #ffffff;
+  --ink-750: #f1f3f7;
+  --ink-700: #e9edf3;
+  --line: #d4dae4;
+  --line-soft: #e4e8ef;
+  --wire: #b6bfcd;
+
+  --text: #16202f;
+  --text-dim: #4d5b73;
+  --text-faint: #7c889d;
+
+  --signal: #a9741a;
+  --signal-dim: #d9c294;
+  --signal-solid: #7d5410;
+  --signal-ink: #fffaf1;
+  --hit: #1f8f70;
+  --warn: #b85f1c;
+  --down: #c4323a;
+  --cool: #2c6fb5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--ink-900);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--step-1);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+
+a {
+  color: var(--cool);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.mono {
+  font-family: var(--font-data);
+  font-size: 0.92em;
+  letter-spacing: -0.01em;
+}
+
+/* --------------------------------------------------------------------------
+   Shell: a fixed rail on the left, content scrolls.
+   -------------------------------------------------------------------------- */
+
+.shell {
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  min-height: 100%;
+}
+
+.rail {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  background: var(--ink-850);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  padding: 22px 0 14px;
+}
+
+.rail__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px 22px;
+}
+
+.rail__mark {
+  flex: none;
+  width: 26px;
+  height: 26px;
+}
+
+.rail__name {
+  font-size: var(--step-1);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.rail__host {
+  font-family: var(--font-data);
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  letter-spacing: 0;
+}
+
+.rail__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0 10px;
+  flex: 1;
+}
+
+.rail__link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  font-size: var(--step-0);
+  font-weight: 500;
+  border-left: var(--rail) solid transparent;
+  transition: background-color 120ms, color 120ms, border-color 120ms;
+}
+
+.rail__link:hover {
+  background: var(--ink-750);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.rail__link[aria-current="page"] {
+  background: var(--ink-700);
+  color: var(--text);
+  border-left-color: var(--signal);
+}
+
+.rail__count {
+  margin-left: auto;
+  font-family: var(--font-data);
+  font-size: 0.72rem;
+  color: var(--text-faint);
+}
+
+.rail__foot {
+  padding: 12px 20px 0;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--text-faint);
+}
+
+.main {
+  min-width: 0;
+  padding: 26px 30px 60px;
+  max-width: 1500px;
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 22px;
+}
+
+.page-head h1 {
+  font-size: var(--step-3);
+}
+
+.page-head p {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: var(--step-0);
+  max-width: 62ch;
+}
+
+.page-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* --------------------------------------------------------------------------
+   Signal path: the hero.
+
+   The gateway is a pipeline, so the overview leads with the pipeline. Four
+   separate stat tiles would show the same numbers and throw away the one
+   thing that makes them legible -- that each stage feeds the next.
+   -------------------------------------------------------------------------- */
+
+.signal {
+  background: var(--ink-850);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 26px 30px 22px;
+  margin-bottom: 18px;
+  overflow: hidden;
+}
+
+.signal__track {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  position: relative;
+  gap: 0;
+}
+
+.signal__wire {
+  position: absolute;
+  top: 33px;
+  left: 12.5%;
+  right: 12.5%;
+  height: 1px;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--wire) 0 5px,
+    transparent 5px 10px
+  );
+}
+
+/* One traced pulse on load, then it holds still. */
+.signal__pulse {
+  position: absolute;
+  top: 32px;
+  width: 54px;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--signal), transparent);
+  animation: trace 2.2s cubic-bezier(0.45, 0, 0.35, 1) 1 both;
+}
+
+@keyframes trace {
+  from {
+    left: 12.5%;
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  to {
+    left: 87.5%;
+    opacity: 0;
+  }
+}
+
+.stage {
+  position: relative;
+  padding-top: 0;
+  text-align: center;
+}
+
+.stage__label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-faint);
+  letter-spacing: 0.02em;
+  margin-bottom: 8px;
+}
+
+.stage__node {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  margin: 0 auto 14px;
+  background: var(--ink-900);
+  border: 2px solid var(--line);
+  position: relative;
+  z-index: 1;
+}
+
+.stage--live .stage__node {
+  border-color: var(--signal);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--signal) 14%, transparent);
+}
+
+.stage__value {
+  font-size: var(--step-4);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.stage__value--empty {
+  color: var(--text-faint);
+  font-size: var(--step-2);
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 2.1;
+}
+
+.stage__unit {
+  font-size: var(--step-1);
+  font-weight: 500;
+  color: var(--text-dim);
+  margin-left: 3px;
+  letter-spacing: -0.01em;
+}
+
+.stage__note {
+  margin-top: 7px;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+  min-height: 1.2em;
+}
+
+/* A row of vertical bars showing recent history, inline under a stage. */
+.bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+  height: 26px;
+  margin-top: 12px;
+}
+
+.bars__bar {
+  width: 4px;
+  border-radius: 1px;
+  background: var(--signal-dim);
+  min-height: 2px;
+}
+
+.bars__bar--now {
+  background: var(--signal);
+}
+
+/* Instance dots: one per backend instance, coloured by state. */
+.dots {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 13px;
+  height: 26px;
+  align-content: flex-start;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--hit);
+}
+.dot--failing {
+  background: var(--down);
+}
+.dot--draining {
+  background: var(--warn);
+}
+.dot--disabled {
+  background: var(--line);
+}
+
+/* A segmented meter for ratios, like a signal-strength gauge. */
+.meter {
+  display: flex;
+  gap: 2px;
+  justify-content: center;
+  margin-top: 13px;
+  height: 26px;
+  align-items: flex-end;
+}
+
+.meter__seg {
+  width: 7px;
+  height: 16px;
+  border-radius: 1px;
+  background: var(--ink-700);
+}
+
+.meter__seg--on {
+  background: var(--hit);
+}
+
+/* --------------------------------------------------------------------------
+   Panels
+   -------------------------------------------------------------------------- */
+
+.grid {
+  display: grid;
+  gap: 16px;
+}
+.grid--2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.grid--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.panel {
+  background: var(--ink-850);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  min-width: 0;
+}
+
+.panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.panel__title {
+  font-size: var(--step-0);
+  font-weight: 600;
+}
+
+.panel__hint {
+  font-size: 0.78rem;
+  color: var(--text-faint);
+}
+
+.panel__body {
+  padding: 16px 18px;
+}
+
+.panel__body--flush {
+  padding: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Rows: the status rail is the structural device. It carries state, so no
+   badge has to.
+   -------------------------------------------------------------------------- */
+
+.rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.row {
+  display: grid;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 18px 12px 15px;
+  border-left: var(--rail) solid var(--line);
+  border-bottom: 1px solid var(--line-soft);
+  min-width: 0;
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.row--healthy {
+  border-left-color: var(--hit);
+}
+.row--degraded {
+  border-left-color: var(--warn);
+}
+.row--down {
+  border-left-color: var(--down);
+}
+.row--idle {
+  border-left-color: var(--line);
+}
+.row--active {
+  border-left-color: var(--signal);
+}
+
+.row__primary {
+  font-family: var(--font-data);
+  font-size: 0.9rem;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row__secondary {
+  font-size: 0.8rem;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+
+.row__num {
+  font-family: var(--font-data);
+  font-size: 0.86rem;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.row__actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+/* The data is what an operator scans; the controls only need to be there when
+   they are wanted. They stay fully visible to keyboards and on touch. */
+.row__actions .btn {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-faint);
+}
+
+.row:hover .row__actions .btn,
+.row__actions .btn:focus-visible {
+  background: var(--ink-750);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.row:hover .row__actions .btn--danger,
+.row__actions .btn--danger:focus-visible {
+  color: var(--down);
+  border-color: color-mix(in srgb, var(--down) 35%, var(--line));
+}
+
+@media (hover: none) {
+  .row__actions .btn {
+    background: var(--ink-750);
+    border-color: var(--line);
+    color: var(--text);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Controls
+   -------------------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--ink-750);
+  color: var(--text);
+  font-size: var(--step-0);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 110ms, border-color 110ms;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--ink-700);
+  border-color: var(--text-faint);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--signal-solid);
+  border-color: var(--signal-solid);
+  color: var(--signal-ink);
+  font-weight: 600;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--signal-solid) 86%, var(--signal-ink));
+  border-color: color-mix(in srgb, var(--signal-solid) 86%, var(--signal-ink));
+}
+
+.btn--danger {
+  color: var(--down);
+  border-color: color-mix(in srgb, var(--down) 40%, var(--line));
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--down) 12%, var(--ink-750));
+  border-color: var(--down);
+}
+
+.btn--small {
+  padding: 4px 9px;
+  font-size: 0.78rem;
+}
+
+.btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: var(--ink-750);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 14px;
+  min-width: 0;
+}
+
+.field__label {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+
+.field__help {
+  font-size: 0.76rem;
+  color: var(--text-faint);
+  line-height: 1.45;
+}
+
+.field__error {
+  font-size: 0.78rem;
+  color: var(--down);
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  padding: 8px 11px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--ink-900);
+  color: var(--text);
+  font-size: var(--step-0);
+}
+
+.input:focus,
+.select:focus,
+.textarea:focus {
+  border-color: var(--signal);
+  outline: none;
+}
+
+.input--mono,
+.textarea--mono {
+  font-family: var(--font-data);
+  font-size: 0.85rem;
+}
+
+.textarea {
+  min-height: 130px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-bottom: 13px;
+  cursor: pointer;
+}
+
+.check input {
+  margin-top: 3px;
+  accent-color: var(--signal);
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+.check__text {
+  font-size: 0.85rem;
+}
+
+.check__help {
+  font-size: 0.76rem;
+  color: var(--text-faint);
+  margin-top: 2px;
+  line-height: 1.45;
+}
+
+.row-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+/* --------------------------------------------------------------------------
+   Tags: small state words. Never the only carrier of state -- the rail does
+   that -- so these stay quiet.
+   -------------------------------------------------------------------------- */
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: var(--ink-700);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.tag--hit {
+  color: var(--hit);
+  background: color-mix(in srgb, var(--hit) 13%, transparent);
+}
+.tag--warn {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 13%, transparent);
+}
+.tag--down {
+  color: var(--down);
+  background: color-mix(in srgb, var(--down) 13%, transparent);
+}
+.tag--signal {
+  color: var(--signal);
+  background: color-mix(in srgb, var(--signal) 13%, transparent);
+}
+.tag--cool {
+  color: var(--cool);
+  background: color-mix(in srgb, var(--cool) 13%, transparent);
+}
+
+/* --------------------------------------------------------------------------
+   Chart
+   -------------------------------------------------------------------------- */
+
+.chart {
+  width: 100%;
+  display: block;
+}
+
+.chart__grid {
+  stroke: var(--line-soft);
+  stroke-width: 1;
+}
+
+.chart__axis {
+  fill: var(--text-faint);
+  font-family: var(--font-data);
+  font-size: 10px;
+}
+
+.chart__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 150px;
+  color: var(--text-faint);
+  font-size: 0.82rem;
+  text-align: center;
+  padding: 0 24px;
+}
+
+/* --------------------------------------------------------------------------
+   Modal
+   -------------------------------------------------------------------------- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--ink-900) 78%, transparent);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 7vh 20px 24px;
+  z-index: 60;
+  overflow-y: auto;
+}
+
+.modal {
+  background: var(--ink-850);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  width: min(620px, 100%);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.modal--wide {
+  width: min(900px, 100%);
+}
+
+.modal__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.modal__title {
+  font-size: var(--step-2);
+}
+
+.modal__sub {
+  margin: 3px 0 0;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  max-width: 58ch;
+}
+
+.modal__body {
+  padding: 18px 20px;
+}
+
+.modal__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px 18px;
+  border-top: 1px solid var(--line-soft);
+}
+
+/* --------------------------------------------------------------------------
+   Toast
+   -------------------------------------------------------------------------- */
+
+.toasts {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 80;
+  max-width: 400px;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 14px;
+  border-radius: var(--radius);
+  background: var(--ink-800);
+  border: 1px solid var(--line);
+  border-left: var(--rail) solid var(--hit);
+  font-size: 0.85rem;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  animation: toast-in 180ms ease-out;
+}
+
+.toast--error {
+  border-left-color: var(--down);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Empty states and notices
+   -------------------------------------------------------------------------- */
+
+.empty {
+  padding: 46px 24px;
+  text-align: center;
+}
+
+.empty__title {
+  font-size: var(--step-1);
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+
+.empty__body {
+  color: var(--text-dim);
+  font-size: var(--step-0);
+  max-width: 48ch;
+  margin: 0 auto 18px;
+}
+
+.notice {
+  display: flex;
+  gap: 10px;
+  padding: 11px 14px;
+  border-radius: var(--radius);
+  background: var(--ink-800);
+  border: 1px solid var(--line);
+  border-left: var(--rail) solid var(--cool);
+  font-size: 0.84rem;
+  color: var(--text-dim);
+  margin-bottom: 16px;
+}
+
+.notice--warn {
+  border-left-color: var(--warn);
+}
+.notice--error {
+  border-left-color: var(--down);
+}
+
+.notice strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.code {
+  font-family: var(--font-data);
+  font-size: 0.78rem;
+  line-height: 1.6;
+  background: var(--ink-900);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  overflow: auto;
+  max-height: 460px;
+  white-space: pre;
+  color: var(--text-dim);
+}
+
+/* --------------------------------------------------------------------------
+   Login
+   -------------------------------------------------------------------------- */
+
+.login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.login__card {
+  width: min(380px, 100%);
+}
+
+.login__brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 22px;
+}
+
+/* --------------------------------------------------------------------------
+   Responsive
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 1100px) {
+  .grid--3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 860px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+
+  .rail {
+    position: static;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 10px;
+  }
+
+  .rail__nav {
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 4px;
+    padding-bottom: 6px;
+  }
+
+  .rail__link {
+    border-left: none;
+    border-bottom: var(--rail) solid transparent;
+    white-space: nowrap;
+  }
+
+  .rail__link[aria-current="page"] {
+    border-left-color: transparent;
+    border-bottom-color: var(--signal);
+  }
+
+  .rail__count,
+  .rail__foot {
+    display: none;
+  }
+
+  .main {
+    padding: 18px 16px 48px;
+  }
+
+  .grid--2,
+  .grid--3,
+  .row-2 {
+    grid-template-columns: 1fr;
+  }
+
+  .signal {
+    padding: 20px 16px 16px;
+  }
+
+  .signal__track {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 22px 8px;
+  }
+
+  .signal__wire,
+  .signal__pulse {
+    display: none;
+  }
+
+  .stage__value {
+    font-size: var(--step-3);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

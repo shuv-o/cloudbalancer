@@ -1,0 +1,202 @@
+{# ---------------------------------------------------------------------------
+   The control panel's own server block.
+
+   Rendered from the access policy, not from routing rules. That separation is
+   deliberate: a mistake in a routing rule must not be able to change how the
+   panel is reached, and the loopback listener in default.conf is outside this
+   file entirely, so it keeps working whatever happens here.
+
+   The order below is the order an attacker meets it: address, then transport,
+   then rate, then anything that runs code.
+   --------------------------------------------------------------------------- #}
+{# Nginx replaces the whole inherited add_header set the moment a location
+   declares one of its own. Any location below that sets a single cache header
+   would therefore drop CSP, HSTS and the rest -- including the location that
+   serves the panel's own HTML. The macro makes repeating them unmissable. #}
+{% macro security_headers(panel) %}
+    add_header Strict-Transport-Security "max-age={{ panel.hsts_seconds }}; includeSubDomains" always;
+    # Nothing is loaded off-origin: the fonts ship with the bundle, so no
+    # external domain gets a script or style position on this page.
+    #
+    # 'unsafe-inline' survives on style-src alone, and only because the panel
+    # sets a handful of layout values as style attributes. It does not apply to
+    # script-src, which is where it would actually matter.
+    add_header Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'; object-src 'none'" always;
+    add_header X-Frame-Options            "DENY" always;
+    add_header X-Content-Type-Options     "nosniff" always;
+    add_header Referrer-Policy            "same-origin" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Permissions-Policy         "accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()" always;
+{% endmacro %}
+{% if panel.is_published %}
+# ===========================================================================
+# Control panel — {{ panel.domain }}
+# ===========================================================================
+
+# Sign-in is rate limited separately from the rest of the panel, and much more
+# tightly. Everything else here is a request from someone already signed in.
+limit_req_zone $binary_remote_addr zone=panel_login:10m rate={{ panel.login_rate_per_minute }}r/m;
+limit_req_zone $binary_remote_addr zone=panel_api:10m   rate={{ panel.api_rate_per_second }}r/s;
+limit_conn_zone $binary_remote_addr zone=panel_conn:10m;
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ panel.domain }};
+
+    location ^~ /.well-known/acme-challenge/ {
+        root {{ acme_webroot }};
+        default_type "text/plain";
+        access_log off;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name {{ panel.domain }};
+
+    # ---- Who may connect at all -------------------------------------------
+{% if panel.allowlist %}
+    # Evaluated before TLS negotiation completes any further work, and before
+    # anything reaches Django. Django checks the same list again, so this
+    # disappearing from a bad render does not silently open the panel.
+{% for cidr in panel.allowlist %}
+    allow {{ cidr }};
+{% endfor %}
+    deny all;
+{% else %}
+    # No address restriction. Anyone on the internet can reach the sign-in
+    # form; only the password and the second factor stand behind it.
+{% endif %}
+
+    # ---- Transport ---------------------------------------------------------
+    ssl_certificate     {{ panel.cert_path }};
+    ssl_certificate_key {{ panel.key_path }};
+
+    # TLS 1.2 is kept only because some corporate middleboxes still terminate
+    # at it. Drop the line below to require 1.3 if nothing on your network does.
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_session_cache   shared:TLSpanel:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+{% if panel.chain_path %}
+    ssl_stapling            on;
+    ssl_stapling_verify     on;
+    ssl_trusted_certificate {{ panel.chain_path }};
+{% endif %}
+
+{% if panel.require_mtls %}
+    # ---- Client certificate ------------------------------------------------
+    # The strongest control here. A caller without a certificate signed by this
+    # CA is refused during the handshake -- they never reach the sign-in form,
+    # so a stolen password on its own is worth nothing.
+    ssl_client_certificate {{ panel.mtls_ca_path }};
+    ssl_verify_client      on;
+    ssl_verify_depth       2;
+
+    # Passed through so the panel can record which certificate was used.
+    proxy_set_header X-Client-Cert-Subject $ssl_client_s_dn;
+{% endif %}
+
+    # ---- Headers -----------------------------------------------------------
+    # The panel is a self-contained bundle: no third-party scripts, no inline
+    # handlers, no frames. Everything here is denied rather than restricted,
+    # because there is nothing legitimate for it to allow.
+{{ security_headers(panel) }}
+
+    # ---- Limits ------------------------------------------------------------
+    limit_conn panel_conn 24;
+    client_max_body_size 2m;
+
+    access_log /var/log/nginx/panel.access.log main buffer=32k flush=5s;
+    error_log  /var/log/nginx/panel.error.log warn;
+
+    # ---- Surface -----------------------------------------------------------
+    # Sign-in, limited hard. A burst of one means codes and passwords cannot be
+    # sprayed even briefly; 429 is returned rather than queueing, so an attacker
+    # gets no timing signal from being made to wait.
+    location = /api/v1/auth/login/ {
+        limit_req zone=panel_login burst=3 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://management_api;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # No add_header here on purpose: without one, this location inherits the
+    # server-level security set. Adding any header here would replace all of it.
+    location /api/ {
+        limit_req zone=panel_api burst={{ panel.api_burst }} nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://management_api;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+
+        # Overwritten, never appended. A caller cannot name their own address
+        # and defeat the allowlist Django checks against it.
+        proxy_set_header X-Forwarded-For   $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+
+{% if panel.expose_django_admin %}
+    location /admin/ {
+        limit_req zone=panel_api burst=10 nodelay;
+        proxy_pass http://management_api;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /static/ {
+        proxy_pass http://management_api;
+        proxy_set_header Host $host;
+        expires 1h;
+    }
+{% else %}
+    # The Django admin is a much larger surface than the panel's own API and
+    # grants the same powers. Reach it over the loopback listener instead.
+    location /admin/ {
+        return 404;
+    }
+{% endif %}
+
+    # Prometheus metrics are served at the root of the Django app. Scrapers
+    # reach it on the internal network; nothing should reach it from outside.
+    location = /metrics {
+        return 404;
+    }
+
+    # Both are content-hashed at build time, so they can be cached hard and
+    # are replaced rather than revalidated on an upgrade.
+    location ~ ^/(assets|fonts)/ {
+        root /usr/share/nginx/panel;
+        access_log off;
+{{ security_headers(panel) }}
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+    }
+
+    location / {
+        root /usr/share/nginx/panel;
+        try_files $uri $uri/ /index.html;
+{{ security_headers(panel) }}
+        # index.html carries the bundle's hashed filenames, so caching it would
+        # pin a browser to an old build across an upgrade.
+        add_header Cache-Control "no-store" always;
+    }
+}
+{% endif %}

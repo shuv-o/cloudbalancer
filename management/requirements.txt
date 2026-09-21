@@ -1,0 +1,36 @@
+# Django core
+Django>=5.1,<6.0
+djangorestframework>=3.15,<4.0
+django-filter>=24.0
+
+# Database
+psycopg2-binary>=2.9
+
+# Cache & broker
+redis>=5.0
+django-redis>=5.4
+celery>=5.4
+django-celery-beat>=2.7
+
+# Nginx config generation
+Jinja2>=3.1
+
+# TLS: ACME issuance and certificate parsing
+certbot>=3.0
+cryptography>=43.0
+
+# HTTP client — health probes, traffic status, Prometheus queries
+httpx>=0.27
+
+# WSGI server
+gunicorn>=23.0
+
+# API surface
+django-cors-headers>=4.4
+
+# Metrics
+django-prometheus>=2.3
+
+# Second factor for the control panel
+pyotp>=2.9
+qrcode>=8.0

@@ -1,0 +1,171 @@
+{# ---------------------------------------------------------------------------
+   One server block per active domain, plus a TLS block where a certificate
+   exists.
+
+   Every domain gets a port-80 listener serving the ACME challenge path from
+   the moment it is created, whether or not it has a certificate yet. That is
+   what removes the usual bootstrap problem: by the time anyone asks for a
+   certificate, the challenge is already answerable.
+   --------------------------------------------------------------------------- #}
+{% macro proxy_headers(rule) %}
+        proxy_http_version 1.1;
+{% if rule.proxy_buffering %}
+        proxy_set_header Connection        "";
+{% else %}
+        # Upgrade-capable route: Connection carries the upgrade token instead
+        # of being cleared. Set once -- nginx adds every proxy_set_header in a
+        # context rather than replacing, so a second one would send the header
+        # twice and the handshake would fail.
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $connection_upgrade;
+{% endif %}
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+        proxy_set_header X-Request-ID      $request_id;
+        proxy_read_timeout {{ rule.proxy_read_timeout }}s;
+{% for header_name, header_value in rule.custom_headers.items() %}
+        proxy_set_header {{ header_name }} "{{ header_value }}";
+{% endfor %}
+{%- endmacro %}
+{% macro routes(domain) %}
+    access_log /var/log/nginx/{{ domain.name }}.access.log main buffer=64k flush=5s;
+    error_log  /var/log/nginx/{{ domain.name }}.error.log warn;
+
+    # Per-vhost counters for the traffic-status module.
+    vhost_traffic_status_filter_by_set_key $server_name host::$server_name;
+
+{% for rule in domain.rules %}
+    # {{ rule.match_value }} -> {{ rule.backend_name }} (priority {{ rule.priority }}{% if rule.cache_enabled %}, cached {{ rule.cache_ttl }}s{% endif %}{% if rule.header_routes %}, {{ rule.header_routes|length }} header override{{ '' if rule.header_routes|length == 1 else 's' }}{% endif %})
+    location {{ rule.nginx_location }} {
+{% if rule.rate_limit_enabled %}
+        limit_req        zone=rl_{{ rule.slug }} burst={{ rule.rate_limit_burst }} nodelay;
+        limit_req_status 429;
+{% endif %}
+{% if rule.strip_prefix %}
+        rewrite ^{{ rule.match_value }}/?(.*)$ /$1 break;
+{% endif %}
+{% if rule.header_routes %}
+        proxy_pass http://$target_{{ rule.slug }};
+{% else %}
+        proxy_pass http://{{ rule.upstream_name }};
+{% endif %}
+
+{{ proxy_headers(rule) }}
+{% if not rule.proxy_buffering %}
+        # Streaming route. Responses pass straight through; nothing that
+        # arrives in pieces over a held connection can be cached anyway.
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding off;
+{% elif rule.cache_enabled %}
+        proxy_cache         gateway_cache;
+        proxy_cache_key     "$scheme$host$request_method$request_uri{{ rule.cache_key_suffix }}";
+        proxy_cache_methods GET HEAD;
+
+        # A fallback for responses carrying no caching headers of their own.
+        # Anything the backend does say -- Cache-Control, Expires, ETag --
+        # still takes precedence over these values.
+        proxy_cache_valid   200 302 {{ rule.cache_ttl }}s;
+        proxy_cache_valid   404 60s;
+        proxy_cache_min_uses {{ rule.cache_min_uses }};
+
+        # Revalidate with If-None-Match / If-Modified-Since on expiry, so an
+        # unchanged object costs a 304 rather than a fresh transfer.
+        proxy_cache_revalidate on;
+
+        # stale-while-revalidate: serve the stale copy immediately, refresh in
+        # the background, and let exactly one request through to the backend.
+        proxy_cache_use_stale         updating error timeout http_500 http_502 http_503 http_504;
+        proxy_cache_background_update on;
+        proxy_cache_lock              on;
+        proxy_cache_lock_age          5s;
+        proxy_cache_lock_timeout      5s;
+{% if rule.cache_ignore_upstream_control %}
+
+        # Overriding the backend's own caching headers, by explicit request.
+        proxy_ignore_headers Cache-Control Expires;
+{% endif %}
+{% if rule.cache_bypass_auth %}
+
+        # Authenticated requests reach the backend and are never stored.
+        # Both directives are needed: bypass on its own would still write the
+        # response into the cache for the next anonymous caller.
+        proxy_cache_bypass $http_authorization $cookie_sessionid $cookie_session;
+        proxy_no_cache     $http_authorization $cookie_sessionid $cookie_session;
+{% endif %}
+{% endif %}
+
+        add_header X-Cache-Status $cache_status_display always;
+        add_header X-Request-ID   $request_id always;
+    }
+
+{% endfor %}
+{% if not domain.has_root_rule %}
+    location / {
+        default_type application/json;
+        return 404 '{"error":"No route is configured for this path on {{ domain.name }}."}';
+    }
+{% endif %}
+{% endmacro %}
+{% for domain in domains %}
+# ===========================================================================
+# {{ domain.name }}{% if domain.ssl_enabled %} -- TLS, {{ domain.cert_issuer_label }}{% else %} -- HTTP only{% endif %}
+
+# ===========================================================================
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ domain.name }};
+
+    # Answered over plain HTTP forever: renewals happen while the site is
+    # already on HTTPS, and the CA always validates on port 80.
+    location ^~ /.well-known/acme-challenge/ {
+        root {{ acme_webroot }};
+        default_type "text/plain";
+        access_log off;
+        try_files $uri =404;
+    }
+
+{% if domain.ssl_enabled and domain.force_ssl_redirect %}
+    location / {
+        return 301 https://$host$request_uri;
+    }
+{% else %}
+{{ routes(domain) }}
+{% endif %}
+}
+
+{% if domain.ssl_enabled %}
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name {{ domain.name }};
+
+    ssl_certificate     {{ domain.ssl_cert_path }};
+    ssl_certificate_key {{ domain.ssl_key_path }};
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_session_cache   shared:TLS{{ domain.slug }}:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+{% if domain.chain_path %}
+    ssl_stapling            on;
+    ssl_stapling_verify     on;
+    ssl_trusted_certificate {{ domain.chain_path }};
+{% endif %}
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+{{ routes(domain) }}
+}
+{% endif %}
+
+{% endfor %}
+{% if not domains %}
+# No active domains have routes yet. Add one in the control panel.
+{% endif %}

@@ -1,0 +1,228 @@
+# =============================================================================
+# Proxy Balancer
+#
+#   nginx     the data plane. The only container on the request path.
+#   django    the control plane: renders config, issues certificates, serves
+#             the API the panel reads.
+#   celery    everything that must not block a request -- deploys, health
+#             probes, ACME.
+#
+# The two planes share four mounts, which is the whole integration surface:
+#   conf.d          django writes, nginx reads
+#   acme_challenge  certbot writes, nginx serves
+#   letsencrypt     certbot writes, nginx reads
+#   nginx_cache     nginx writes, django purges from
+# =============================================================================
+
+x-management: &management
+  build:
+    context: ./management
+    dockerfile: Dockerfile
+  env_file: [.env]
+  volumes:
+    - ./management:/app
+    - ./gateway/nginx/conf.d:/etc/nginx/conf.d
+    - acme_challenge:/var/www/acme
+    - letsencrypt:/etc/letsencrypt
+    - letsencrypt_work:/var/lib/letsencrypt
+    - letsencrypt_log:/var/log/letsencrypt
+    - nginx_cache:/var/cache/nginx
+    - ssl_certs:/etc/nginx/ssl
+    - /var/run/docker.sock:/var/run/docker.sock
+  restart: unless-stopped
+  networks: [gateway]
+
+services:
+  # ---------------------------------------------------------------------------
+  # Data plane
+  # ---------------------------------------------------------------------------
+  nginx:
+    build:
+      context: ./gateway/nginx
+      dockerfile: Dockerfile
+      args:
+        NGINX_VERSION: ${NGINX_VERSION:-1.27.4}
+    image: proxy-balancer/nginx:vts
+    container_name: proxy-balancer-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+      # The control panel. Bound to loopback by default: it is an admin surface
+      # and does not belong on a public interface. Change PANEL_BIND to expose
+      # it on a LAN address.
+      - "${PANEL_BIND:-127.0.0.1}:8081:8081"
+    volumes:
+      - ./gateway/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./gateway/nginx/conf.d:/etc/nginx/conf.d
+      - panel_dist:/usr/share/nginx/panel:ro
+      - nginx_cache:/var/cache/nginx
+      - acme_challenge:/var/www/acme:ro
+      - letsencrypt:/etc/letsencrypt:ro
+      - ssl_certs:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      django:
+        condition: service_started
+      panel:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks: [gateway]
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    # Proxying tens of thousands of concurrent connections needs more file
+    # descriptors than the Docker default of 1024.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  # ---------------------------------------------------------------------------
+  # Control plane
+  # ---------------------------------------------------------------------------
+  django:
+    <<: *management
+    container_name: proxy-balancer-django
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             python manage.py bootstrap --skip-deploy &&
+             gunicorn config.wsgi:application
+               --bind 0.0.0.0:8000
+               --workers 4
+               --timeout 120
+               --access-logfile -"
+    expose: ["8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  celery:
+    <<: *management
+    container_name: proxy-balancer-celery
+    command: celery -A config worker -l info -c 4
+    depends_on:
+      django: {condition: service_started}
+      redis: {condition: service_healthy}
+
+  celery-beat:
+    <<: *management
+    container_name: proxy-balancer-celery-beat
+    command: >
+      celery -A config beat -l info
+        --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    depends_on:
+      django: {condition: service_started}
+      redis: {condition: service_healthy}
+
+  # ---------------------------------------------------------------------------
+  # Control panel — builds the bundle, drops it in a volume, exits.
+  # ---------------------------------------------------------------------------
+  panel:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: proxy-balancer-panel-build
+    volumes:
+      - panel_dist:/out
+    command: sh -c "rm -rf /out/* && cp -r /app/dist/. /out/ && echo 'Control panel built.'"
+    networks: [gateway]
+
+  # ---------------------------------------------------------------------------
+  # Stores
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: proxy-balancer-postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-proxy_balancer}
+      POSTGRES_USER: ${POSTGRES_USER:-proxy_balancer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-proxy_balancer}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [gateway]
+
+  redis:
+    image: redis:7-alpine
+    container_name: proxy-balancer-redis
+    command: redis-server --save 60 1 --appendonly no
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks: [gateway]
+
+  # ---------------------------------------------------------------------------
+  # Observability
+  #
+  # Prometheus scrapes Nginx directly: the traffic-status module serves its own
+  # Prometheus endpoint, so there is no exporter sidecar to run or to fall
+  # behind. That endpoint is also the only source of cache hit ratio.
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: proxy-balancer-prometheus
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    expose: ["9090"]
+    ports:
+      - "${OBSERVABILITY_BIND:-127.0.0.1}:9090:9090"
+    restart: unless-stopped
+    networks: [gateway]
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    container_name: proxy-balancer-grafana
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # Allows the control panel to embed panels in an iframe.
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+    ports:
+      - "${OBSERVABILITY_BIND:-127.0.0.1}:3000:3000"
+    depends_on:
+      prometheus: {condition: service_started}
+    restart: unless-stopped
+    networks: [gateway]
+
+volumes:
+  postgres_data:
+  redis_data:
+  nginx_cache:
+  nginx_logs:
+  ssl_certs:
+  acme_challenge:
+  letsencrypt:
+  letsencrypt_work:
+  letsencrypt_log:
+  panel_dist:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  gateway:
+    driver: bridge

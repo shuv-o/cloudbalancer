@@ -122,7 +122,12 @@ class RoutingRule(models.Model):
     )
     proxy_read_timeout = models.IntegerField(
         default=60,
-        help_text="Read timeout in seconds for this route",
+        help_text=(
+            "Seconds to wait for the backend to respond. On a streaming route "
+            "this bounds idle time on the open connection instead, so a "
+            "WebSocket that goes quiet for longer than this is closed -- which "
+            "is why streaming routes want a much larger value."
+        ),
     )
 
     # Rate limiting

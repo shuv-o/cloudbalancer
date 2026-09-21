@@ -314,6 +314,56 @@ upstream NAT, not the gateway.
 The error says so explicitly. Switch to staging, fix the real problem there,
 then come back.
 
+### A WebSocket connects and then drops
+
+Almost always the idle timeout. Turn on **Stream the response** for the route
+and set **Close after idle** longer than your application's heartbeat — the
+panel defaults it to an hour when you enable streaming, because the
+request-response default of 60 seconds silently closes any socket that goes
+quiet for a minute.
+
+Check what is actually deployed:
+
+```bash
+grep -A 4 'location /socket/' gateway/nginx/conf.d/20-servers.conf
+```
+
+A working streaming route has all of these:
+
+```nginx
+proxy_http_version 1.1;
+proxy_set_header Upgrade    $http_upgrade;
+proxy_set_header Connection $connection_upgrade;
+proxy_read_timeout 3600s;
+proxy_send_timeout 3600s;
+proxy_buffering off;
+```
+
+If the handshake itself fails rather than dropping later, it is one of:
+
+**The route is not marked streaming.** Without it, `Connection` is cleared
+rather than carrying the upgrade token, and the backend never sees an upgrade
+request. The response will be a plain 200 instead of a 101.
+
+**`$connection_upgrade` is undefined.** It comes from a `map` in
+`00-maps.conf`; if that file is missing the variable is empty and the header is
+dropped. `make config` will show it.
+
+**Per-address connection limits.** WebSocket connections are long-lived, so
+they occupy a slot for their whole lifetime. The default cap is 64 concurrent
+connections per address, which a NAT'd office can reach with far fewer than 64
+users. Raise it on Security → Traffic limits.
+
+Confirm end to end:
+
+```bash
+curl -i -N -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+     -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+     https://ws.example.com/socket/
+```
+
+`HTTP/1.1 101 Switching Protocols` means the gateway is doing its part.
+
 ### The cache is not hitting
 
 Ask a response directly:

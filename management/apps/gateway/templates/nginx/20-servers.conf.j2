@@ -25,7 +25,15 @@
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host  $host;
         proxy_set_header X-Request-ID      $request_id;
+{% if rule.proxy_buffering %}
         proxy_read_timeout {{ rule.proxy_read_timeout }}s;
+{% else %}
+        # On an upgraded connection these bound idle time, not response time.
+        # Both directions are needed: a socket that is quiet inbound but not
+        # outbound would still be closed by the one that was left short.
+        proxy_read_timeout {{ rule.proxy_read_timeout }}s;
+        proxy_send_timeout {{ rule.proxy_read_timeout }}s;
+{% endif %}
 {% for header_name, header_value in rule.custom_headers.items() %}
         proxy_set_header {{ header_name }} "{{ header_value }}";
 {% endfor %}

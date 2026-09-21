@@ -112,6 +112,33 @@ if you turn on draining, and then only after several consecutive results —
 because each drain costs a reload, and a flapping backend would otherwise
 produce a continuous stream of them.
 
+## WebSocket and streaming
+
+Supported per route, with **Stream the response**. That forwards the upgrade
+handshake, turns off buffering so messages are not held back waiting for a
+buffer to fill, and turns off caching, which nothing arriving in pieces over a
+held connection could use anyway. Server-sent events and long downloads take
+the same switch.
+
+The timeout field changes meaning with the mode, so the panel changes with it.
+On a normal route it is how long to wait for the backend; on a streaming route
+it is how long the connection may go quiet before Nginx closes it, and enabling
+streaming moves the default from 60 seconds to an hour. A 60-second idle
+timeout is the usual reason WebSocket support appears to work and then does
+not: the handshake succeeds, messages flow, and the socket dies the first time
+it is quiet for a minute.
+
+Two interactions worth knowing:
+
+- The **handshake is an ordinary request**, so it is rate limited like any
+  other. Only the upgraded connection escapes, which is what you want.
+- WebSocket connections **hold a per-address connection slot** for their whole
+  lifetime. The default cap of 64 per address is reachable by a NAT'd office
+  with far fewer than 64 users.
+
+If a backend keeps per-connection state that its HTTP requests also need, set
+that backend's balancing to **Client IP** so both land on the same instance.
+
 ## Caching
 
 Off by default, on per route. Once on:

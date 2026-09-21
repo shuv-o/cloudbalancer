@@ -208,7 +208,16 @@ function RuleForm({
             />
           </Field>
 
-          <Field label="Wait up to (seconds)" help="How long to wait for the backend to respond.">
+          <Field
+            label={
+              draft.proxy_buffering ? "Wait up to (seconds)" : "Close after idle (seconds)"
+            }
+            help={
+              draft.proxy_buffering
+                ? "How long to wait for the backend to respond."
+                : "How long the open connection may go quiet before it is closed. A WebSocket with a slower heartbeat than this will be dropped."
+            }
+          >
             <input
               className="input"
               type="number"
@@ -364,16 +373,37 @@ function RuleForm({
 
         <Check
           label="Stream the response"
-          help="Turn this on for WebSocket, server-sent events or long downloads. Responses pass straight through and are never cached."
+          help="Turn this on for WebSocket, server-sent events or long downloads. Responses pass straight through, are never cached, and the upgrade handshake is forwarded."
           checked={!draft.proxy_buffering}
           onChange={(v) =>
             setDraft({
               ...draft,
               proxy_buffering: !v,
               cache_enabled: v ? false : draft.cache_enabled,
+              // The timeout changes meaning with the mode, so it moves with it.
+              // Leaving the request-response default would close idle sockets
+              // after a minute, which is the usual way WebSocket support
+              // appears to work and then does not.
+              proxy_read_timeout:
+                v && draft.proxy_read_timeout === 60
+                  ? 3600
+                  : !v && draft.proxy_read_timeout === 3600
+                    ? 60
+                    : draft.proxy_read_timeout,
             })
           }
         />
+
+        {!draft.proxy_buffering && (
+          <Notice>
+            <span>
+              The connection is closed after{" "}
+              <strong>{draft.proxy_read_timeout} seconds</strong> of silence. Set this
+              longer than your application's heartbeat, or the socket will drop between
+              beats and reconnect.
+            </span>
+          </Notice>
+        )}
 
         <Check
           label="Route is live"

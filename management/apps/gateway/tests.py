@@ -533,3 +533,98 @@ class StreamingRouteTests(TestCase):
 
         config = config_render()["20-servers.conf"]
         self.assertIn('proxy_set_header Connection        "";', config)
+
+
+class WebSocketTests(TestCase):
+    """
+    Upgraded connections.
+
+    WebSocket through Nginx has a well-known way of appearing to work and then
+    not: the handshake succeeds, messages flow, and then the socket dies the
+    first time it is quiet for longer than the read timeout. These cover the
+    handshake and that timeout together, because the first without the second
+    is the bug.
+    """
+
+    def setUp(self):
+        backend = backend_create(name="realtime")
+        instance_add(backend=backend, address="10.0.1.11", port=8080)
+        self.domain = domain_create(name="ws.example.com")
+        self.backend = backend
+
+    def _render(self, **kwargs):
+        rule_create(
+            domain_id=self.domain.id,
+            backend_id=self.backend.id,
+            match_value="/socket/",
+            proxy_buffering=False,
+            **kwargs,
+        )
+        return config_render()
+
+    def test_the_upgrade_handshake_is_forwarded(self):
+        config = self._render()["20-servers.conf"]
+
+        self.assertIn("proxy_http_version 1.1;", config)
+        self.assertIn("proxy_set_header Upgrade           $http_upgrade;", config)
+        self.assertIn("proxy_set_header Connection        $connection_upgrade;", config)
+
+    def test_the_connection_variable_is_defined(self):
+        """
+        Without the map, $connection_upgrade is empty and the upgrade header
+        never reaches the backend -- the handshake just fails.
+        """
+        maps = self._render()["00-maps.conf"]
+
+        self.assertIn("map $http_upgrade $connection_upgrade {", maps)
+        self.assertIn("default  upgrade;", maps)
+        # A plain request must not be told to upgrade.
+        self.assertIn('""       "";', maps)
+
+    def test_connection_is_set_exactly_once(self):
+        """Nginx adds headers rather than replacing them; two would break it."""
+        config = self._render()["20-servers.conf"]
+        self.assertEqual(config.count("proxy_set_header Connection"), 1)
+
+    def test_both_idle_directions_are_bounded(self):
+        """
+        An upgraded connection that is quiet inbound but not outbound would
+        still be closed if only one direction carried a timeout.
+        """
+        config = self._render(proxy_read_timeout=3600)["20-servers.conf"]
+
+        self.assertIn("proxy_read_timeout 3600s;", config)
+        self.assertIn("proxy_send_timeout 3600s;", config)
+
+    def test_a_request_response_route_does_not_get_a_send_timeout(self):
+        """It would mean something different there, and the http default applies."""
+        rule_create(
+            domain_id=self.domain.id,
+            backend_id=self.backend.id,
+            match_value="/api/",
+        )
+        config = config_render()["20-servers.conf"]
+
+        api_block = config[config.index("location /api/"):]
+        self.assertNotIn("proxy_send_timeout", api_block)
+
+    def test_buffering_and_caching_are_both_off(self):
+        """
+        Buffering would hold messages back until a buffer filled, and nothing
+        arriving in pieces over a held connection can be cached anyway.
+        """
+        config = self._render()["20-servers.conf"]
+
+        self.assertIn("proxy_buffering off;", config)
+        self.assertIn("proxy_cache off;", config)
+        self.assertIn("chunked_transfer_encoding off;", config)
+
+    def test_a_streaming_route_still_gets_per_address_limits(self):
+        """
+        The handshake is an ordinary request, so it is rate limited like any
+        other. Only the upgraded connection escapes, which is correct.
+        """
+        config = self._render()["20-servers.conf"]
+
+        self.assertIn("limit_conn per_ip_conn", config)
+        self.assertIn("limit_req  zone=per_ip_req", config)

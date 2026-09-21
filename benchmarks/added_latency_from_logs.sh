@@ -13,7 +13,7 @@
 set -euo pipefail
 
 LOG="${1:-/var/log/nginx/access.log}"
-CONTAINER="${NGINX_CONTAINER:-proxy-balancer-nginx}"
+CONTAINER="${NGINX_CONTAINER:-cloudbalancer-nginx}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

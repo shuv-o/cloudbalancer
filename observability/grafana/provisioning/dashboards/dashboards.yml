@@ -1,9 +1,9 @@
 apiVersion: 1
 
 providers:
-  - name: proxy-balancer
+  - name: cloudbalancer
     orgId: 1
-    folder: Gateway
+    folder: CloudBalancer
     type: file
     disableDeletion: false
     updateIntervalSeconds: 30

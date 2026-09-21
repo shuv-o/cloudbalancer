@@ -5,10 +5,10 @@
   },
   "editable": true,
   "graphTooltip": 1,
-  "title": "Gateway",
-  "uid": "proxy-balancer-gateway",
+  "title": "CloudBalancer",
+  "uid": "cloudbalancer-gateway",
   "tags": [
-    "proxy-balancer",
+    "cloudbalancer",
     "nginx"
   ],
   "timezone": "browser",

@@ -1,5 +1,5 @@
 """
-URL configuration for the Proxy Balancer management API.
+URL configuration for the CloudBalancer management API.
 
 Everything the control panel uses lives under /api/v1/. The Prometheus
 endpoint sits outside it because scrapers expect /metrics at the root.

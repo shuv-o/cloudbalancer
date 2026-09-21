@@ -11,7 +11,7 @@
 services:
   mock-a:
     build: ./benchmarks/mock_backend
-    container_name: proxy-balancer-mock-a
+    container_name: cloudbalancer-mock-a
     environment:
       INSTANCE_NAME: mock-a
     ports: ["9101:8080"]
@@ -19,7 +19,7 @@ services:
 
   mock-b:
     build: ./benchmarks/mock_backend
-    container_name: proxy-balancer-mock-b
+    container_name: cloudbalancer-mock-b
     environment:
       INSTANCE_NAME: mock-b
     ports: ["9102:8080"]
@@ -27,7 +27,7 @@ services:
 
   mock-c:
     build: ./benchmarks/mock_backend
-    container_name: proxy-balancer-mock-c
+    container_name: cloudbalancer-mock-c
     environment:
       INSTANCE_NAME: mock-c
     ports: ["9103:8080"]

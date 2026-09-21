@@ -145,7 +145,7 @@ panel-ca: ## Create the CA that signs operator client certificates
 	openssl ecparam -genkey -name prime256v1 -out $(CA_DIR)/panel-ca.key
 	chmod 600 $(CA_DIR)/panel-ca.key
 	openssl req -x509 -new -key $(CA_DIR)/panel-ca.key -sha256 -days 3650 \
-		-subj "/CN=Gateway Console CA" -out $(CA_DIR)/panel-ca.pem
+		-subj "/CN=CloudBalancer CA" -out $(CA_DIR)/panel-ca.pem
 	@echo
 	@echo "CA created. Two things to do:"
 	@echo "  1. Point the panel's access policy at /etc/nginx/client-ca/panel-ca.pem"
@@ -160,7 +160,7 @@ panel-cert: ## Issue an operator certificate: make panel-cert NAME=alice
 		-CA $(CA_DIR)/panel-ca.pem -CAkey $(CA_DIR)/panel-ca.key -CAcreateserial \
 		-days 825 -sha256 -out $(CA_DIR)/$(NAME).pem
 	openssl pkcs12 -export -inkey $(CA_DIR)/$(NAME).key -in $(CA_DIR)/$(NAME).pem \
-		-certfile $(CA_DIR)/panel-ca.pem -name "Gateway Console — $(NAME)" \
+		-certfile $(CA_DIR)/panel-ca.pem -name "CloudBalancer — $(NAME)" \
 		-out $(CA_DIR)/$(NAME).p12
 	rm -f $(CA_DIR)/$(NAME).csr
 	@echo

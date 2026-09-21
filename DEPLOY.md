@@ -33,8 +33,8 @@ dig +short api.example.com     # must return this server's public address
 ## First deploy
 
 ```bash
-git clone <your-repo> /opt/proxy-balancer
-cd /opt/proxy-balancer
+git clone <your-repo> /opt/cloudbalancer
+cd /opt/cloudbalancer
 cp .env.example .env
 ```
 
@@ -135,11 +135,11 @@ Two volumes hold state you cannot regenerate:
 
 ```bash
 # The source of truth for every domain, backend and route.
-docker compose exec -T postgres pg_dump -U proxy_balancer proxy_balancer \
+docker compose exec -T postgres pg_dump -U cloudbalancer cloudbalancer \
   | gzip > backup-$(date +%F).sql.gz
 
 # Certificates and ACME account keys.
-docker run --rm -v proxy_balancer_letsencrypt:/data -v "$PWD":/out alpine \
+docker run --rm -v cloudbalancer_letsencrypt:/data -v "$PWD":/out alpine \
   tar czf /out/letsencrypt-$(date +%F).tar.gz -C /data .
 ```
 
@@ -160,6 +160,46 @@ make deploy
 ```
 
 Nginx reloads gracefully, so in-flight requests finish on the old workers.
+
+### Coming from an install that predates the CloudBalancer name
+
+Only relevant if you deployed while this was called `proxy_balancer`. The
+rename changed the Compose project name, which prefixes every volume, and the
+Postgres database and role. A plain `git pull` will therefore come up with
+empty volumes and an empty database rather than an error, which is the
+confusing kind of failure.
+
+Take a dump under the old name first:
+
+```bash
+docker compose -p proxy_balancer exec -T postgres \
+  pg_dump -U proxy_balancer proxy_balancer | gzip > pre-rename.sql.gz
+
+docker run --rm -v proxy_balancer_letsencrypt:/data -v "$PWD":/out alpine \
+  tar czf /out/pre-rename-letsencrypt.tar.gz -C /data .
+```
+
+Then bring up the renamed stack and load it back:
+
+```bash
+make build && docker compose up -d postgres
+gunzip -c pre-rename.sql.gz \
+  | sed 's/proxy_balancer/cloudbalancer/g' \
+  | docker compose exec -T postgres psql -U cloudbalancer cloudbalancer
+
+docker run --rm -v cloudbalancer_letsencrypt:/data -v "$PWD":/in alpine \
+  tar xzf /in/pre-rename-letsencrypt.tar.gz -C /data
+
+docker compose up -d
+make deploy
+```
+
+The `sed` covers the role name embedded in the dump's ownership statements.
+Nothing else in the data carries the old name — configuration is rendered from
+the database, so the generated Nginx files regenerate on the first deploy.
+
+The old volumes are left untouched, so this is reversible until you remove
+them yourself.
 
 ---
 

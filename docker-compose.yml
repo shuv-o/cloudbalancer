@@ -1,5 +1,5 @@
 # =============================================================================
-# Proxy Balancer
+# CloudBalancer
 #
 #   nginx     the data plane. The only container on the request path.
 #   django    the control plane: renders config, issues certificates, serves
@@ -13,6 +13,11 @@
 #   letsencrypt     certbot writes, nginx reads
 #   nginx_cache     nginx writes, django purges from
 # =============================================================================
+
+# Set explicitly rather than derived from the directory name: the project
+# name prefixes every volume, so leaving it implicit would make the data
+# depend on what the checkout happens to be called.
+name: cloudbalancer
 
 x-management: &management
   build:
@@ -42,8 +47,8 @@ services:
       dockerfile: Dockerfile
       args:
         NGINX_VERSION: ${NGINX_VERSION:-1.27.4}
-    image: proxy-balancer/nginx:vts
-    container_name: proxy-balancer-nginx
+    image: cloudbalancer/nginx:vts
+    container_name: cloudbalancer-nginx
     ports:
       - "80:80"
       - "443:443"
@@ -98,7 +103,7 @@ services:
   # ---------------------------------------------------------------------------
   django:
     <<: *management
-    container_name: proxy-balancer-django
+    container_name: cloudbalancer-django
     command: >
       sh -c "python manage.py migrate --noinput &&
              python manage.py collectstatic --noinput &&
@@ -115,7 +120,7 @@ services:
 
   celery:
     <<: *management
-    container_name: proxy-balancer-celery
+    container_name: cloudbalancer-celery
     command: celery -A config worker -l info -c 4
     depends_on:
       django: {condition: service_started}
@@ -123,7 +128,7 @@ services:
 
   celery-beat:
     <<: *management
-    container_name: proxy-balancer-celery-beat
+    container_name: cloudbalancer-celery-beat
     command: >
       celery -A config beat -l info
         --scheduler django_celery_beat.schedulers:DatabaseScheduler
@@ -138,7 +143,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: proxy-balancer-panel-build
+    container_name: cloudbalancer-panel-build
     volumes:
       - panel_dist:/out
     command: sh -c "rm -rf /out/* && cp -r /app/dist/. /out/ && echo 'Control panel built.'"
@@ -149,15 +154,15 @@ services:
   # ---------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
-    container_name: proxy-balancer-postgres
+    container_name: cloudbalancer-postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-proxy_balancer}
-      POSTGRES_USER: ${POSTGRES_USER:-proxy_balancer}
+      POSTGRES_DB: ${POSTGRES_DB:-cloudbalancer}
+      POSTGRES_USER: ${POSTGRES_USER:-cloudbalancer}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-proxy_balancer}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cloudbalancer}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -166,7 +171,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: proxy-balancer-redis
+    container_name: cloudbalancer-redis
     command: redis-server --save 60 1 --appendonly no
     volumes:
       - redis_data:/data
@@ -187,7 +192,7 @@ services:
   # ---------------------------------------------------------------------------
   prometheus:
     image: prom/prometheus:v3.1.0
-    container_name: proxy-balancer-prometheus
+    container_name: cloudbalancer-prometheus
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -204,7 +209,7 @@ services:
 
   grafana:
     image: grafana/grafana:11.5.1
-    container_name: proxy-balancer-grafana
+    container_name: cloudbalancer-grafana
     volumes:
       - grafana_data:/var/lib/grafana
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro

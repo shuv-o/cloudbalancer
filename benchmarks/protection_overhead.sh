@@ -18,7 +18,7 @@ source "$(dirname "$0")/lib.sh"
 require vegeta
 require jq
 
-DJANGO="${DJANGO_CONTAINER:-proxy-balancer-django}"
+DJANGO="${DJANGO_CONTAINER:-cloudbalancer-django}"
 
 set_protection() {
     docker compose exec -T "$DJANGO" python manage.py shell -c "

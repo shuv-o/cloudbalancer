@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Django management script for Proxy Balancer."""
+"""Django management script for CloudBalancer."""
 import os
 import sys
 

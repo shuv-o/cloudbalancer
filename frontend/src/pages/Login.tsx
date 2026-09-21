@@ -68,7 +68,7 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
           </svg>
           <div>
             <div style={{ fontSize: "1.15rem", fontWeight: 600, letterSpacing: "-0.02em" }}>
-              Gateway Console
+              CloudBalancer
             </div>
             <div className="mono" style={{ color: "var(--text-faint)", fontSize: "0.75rem" }}>
               {window.location.host}

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from config.settings.base import *  # noqa: F401,F403
 
-_TMP = Path(tempfile.mkdtemp(prefix="proxy-balancer-test-"))
+_TMP = Path(tempfile.mkdtemp(prefix="cloudbalancer-test-"))
 
 DEBUG = False
 SECRET_KEY = "test-only-key"
@@ -29,7 +29,7 @@ DATABASES = {
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "proxy-balancer-test",
+        "LOCATION": "cloudbalancer-test",
     }
 }
 

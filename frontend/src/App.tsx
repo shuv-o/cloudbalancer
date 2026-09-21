@@ -94,7 +94,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         <div className="rail__brand">
           <Mark />
           <div>
-            <div className="rail__name">Gateway</div>
+            <div className="rail__name">CloudBalancer</div>
             <div className="rail__host">{window.location.hostname}</div>
           </div>
         </div>

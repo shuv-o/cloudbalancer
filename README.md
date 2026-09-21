@@ -1,4 +1,4 @@
-# Proxy Balancer
+# CloudBalancer
 
 A self-hosted API gateway: one public address in front of many backend
 services, with routing, load balancing, HTTP caching, automatic TLS, and a

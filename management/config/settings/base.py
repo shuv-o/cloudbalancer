@@ -1,5 +1,5 @@
 """
-Django settings for Proxy Balancer.
+Django settings for CloudBalancer.
 
 Uses environment variables for all secrets and host-specific configuration.
 """
@@ -97,8 +97,8 @@ TEMPLATES = [
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.environ.get("POSTGRES_DB", "proxy_balancer"),
-        "USER": os.environ.get("POSTGRES_USER", "proxy_balancer"),
+        "NAME": os.environ.get("POSTGRES_DB", "cloudbalancer"),
+        "USER": os.environ.get("POSTGRES_USER", "cloudbalancer"),
         "PASSWORD": os.environ.get("POSTGRES_PASSWORD", "changeme_in_production"),
         "HOST": os.environ.get("POSTGRES_HOST", "postgres"),
         "PORT": os.environ.get("POSTGRES_PORT", "5432"),
@@ -225,7 +225,7 @@ SECURE_SSL_REDIRECT = False
 # =============================================================================
 # Second factor
 # =============================================================================
-TOTP_ISSUER = os.environ.get("TOTP_ISSUER", "Gateway Console")
+TOTP_ISSUER = os.environ.get("TOTP_ISSUER", "CloudBalancer")
 
 # =============================================================================
 # Static files
@@ -262,7 +262,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # Gateway — where the control plane writes, and how it reaches Nginx
 # =============================================================================
 NGINX_CONF_DIR = os.environ.get("NGINX_CONF_DIR", "/etc/nginx/conf.d")
-NGINX_CONTAINER_NAME = os.environ.get("NGINX_CONTAINER_NAME", "proxy-balancer-nginx")
+NGINX_CONTAINER_NAME = os.environ.get("NGINX_CONTAINER_NAME", "cloudbalancer-nginx")
 NGINX_SSL_DIR = os.environ.get("NGINX_SSL_DIR", "/etc/nginx/ssl")
 NGINX_CACHE_DIR = os.environ.get("NGINX_CACHE_DIR", "/var/cache/nginx")
 
@@ -294,7 +294,7 @@ ACME_WEBROOT_DIR = os.environ.get("ACME_WEBROOT_DIR", "/var/www/acme")
 
 # ECDSA by default: smaller handshakes, and every browser in use supports it.
 ACME_KEY_TYPE = os.environ.get("ACME_KEY_TYPE", "ecdsa")
-SELF_SIGNED_ORG = os.environ.get("SELF_SIGNED_ORG", "Proxy Balancer Gateway")
+SELF_SIGNED_ORG = os.environ.get("SELF_SIGNED_ORG", "CloudBalancer")
 
 # =============================================================================
 # Logging

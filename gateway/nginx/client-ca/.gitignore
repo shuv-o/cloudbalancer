@@ -1,0 +1,8 @@
+# Never commit key material. The CA key in particular is equivalent to a
+# permanent skeleton key for the control panel.
+*.key
+*.p12
+*.pem
+*.srl
+*.csr
+!panel-ca.pem.example

@@ -748,14 +748,17 @@ textarea {
 }
 
 .check__text {
+  display: block;
   font-size: 0.85rem;
 }
 
 .check__help {
+  display: block;
   font-size: 0.76rem;
   color: var(--text-faint);
   margin-top: 2px;
   line-height: 1.45;
+  max-width: 62ch;
 }
 
 .row-2 {

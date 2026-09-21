@@ -71,6 +71,7 @@ make seed                # a demo topology pointing at them
 | **Certificates** | Issue, renew, upload; automatic renewal for anything from an authority |
 | **Cache** | Hit ratio, what happened to each request, drop a single URL |
 | **Deploys** | Every config change, what it rendered, and why one was rejected |
+| **Security** | How the panel is reached, who has been reaching it, and the audit trail |
 
 ---
 
@@ -160,6 +161,27 @@ every domain, not just the one being changed.
 
 Start with the staging authority. Production allows five failed attempts per
 hostname per hour, and a typo costs one of them.
+
+## Reaching the panel
+
+On loopback by default, because reaching it is equivalent to controlling every
+hostname the gateway serves. An SSH tunnel is the safest way in and costs one
+command:
+
+```bash
+ssh -L 8081:localhost:8081 you@gateway
+```
+
+It can also be published on a hostname of its own, with controls that fail
+independently of each other: an address allowlist enforced in both Nginx and
+Django, optional client certificates, a mandatory authenticator app, per-address
+rate limits, account lockout, idle and absolute session limits, a content
+security policy that permits no third-party origin, and an append-only audit
+trail. The Django admin and the metrics endpoint are not served publicly.
+
+The loopback listener is never generated from that policy, so no setting on the
+Security page can lock an operator out of the machine. See
+[DEPLOY.md](DEPLOY.md) for the procedure.
 
 ## Deploys
 
@@ -273,6 +295,7 @@ management/          Django control plane
   apps/backends/       services, instances, health
   apps/routing/        rules, header overrides, deploy log
   apps/certificates/   ACME, self-signed, import, renewal
+  apps/security/       panel exposure, second factors, lockout, audit
   apps/gateway/        config rendering, deploy, cache purge
   apps/monitoring/     traffic status and Prometheus queries
 frontend/            control panel (React, no runtime server)

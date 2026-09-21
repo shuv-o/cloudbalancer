@@ -131,3 +131,53 @@ panel-build: ## Rebuild the control panel bundle
 
 panel-dev: ## Run the panel's dev server against a local Django
 	cd frontend && npm run dev
+
+# ---------------------------------------------------------------------------
+# Control panel exposure
+# ---------------------------------------------------------------------------
+
+CA_DIR := gateway/nginx/client-ca
+NAME   ?= operator
+
+panel-ca: ## Create the CA that signs operator client certificates
+	@test ! -f $(CA_DIR)/panel-ca.key || \
+		(echo "A CA already exists. Delete $(CA_DIR)/panel-ca.* first if you really mean to replace it." && exit 1)
+	openssl ecparam -genkey -name prime256v1 -out $(CA_DIR)/panel-ca.key
+	chmod 600 $(CA_DIR)/panel-ca.key
+	openssl req -x509 -new -key $(CA_DIR)/panel-ca.key -sha256 -days 3650 \
+		-subj "/CN=Gateway Console CA" -out $(CA_DIR)/panel-ca.pem
+	@echo
+	@echo "CA created. Two things to do:"
+	@echo "  1. Point the panel's access policy at /etc/nginx/client-ca/panel-ca.pem"
+	@echo "  2. Back up $(CA_DIR)/panel-ca.key somewhere safe — and nowhere else."
+	@echo "     Anyone holding it can issue themselves access."
+
+panel-cert: ## Issue an operator certificate: make panel-cert NAME=alice
+	@test -f $(CA_DIR)/panel-ca.key || (echo "Run 'make panel-ca' first." && exit 1)
+	openssl ecparam -genkey -name prime256v1 -out $(CA_DIR)/$(NAME).key
+	openssl req -new -key $(CA_DIR)/$(NAME).key -subj "/CN=$(NAME)" -out $(CA_DIR)/$(NAME).csr
+	openssl x509 -req -in $(CA_DIR)/$(NAME).csr \
+		-CA $(CA_DIR)/panel-ca.pem -CAkey $(CA_DIR)/panel-ca.key -CAcreateserial \
+		-days 825 -sha256 -out $(CA_DIR)/$(NAME).pem
+	openssl pkcs12 -export -inkey $(CA_DIR)/$(NAME).key -in $(CA_DIR)/$(NAME).pem \
+		-certfile $(CA_DIR)/panel-ca.pem -name "Gateway Console — $(NAME)" \
+		-out $(CA_DIR)/$(NAME).p12
+	rm -f $(CA_DIR)/$(NAME).csr
+	@echo
+	@echo "Issued $(CA_DIR)/$(NAME).p12 — import it into the operator's browser."
+	@echo "Send it over something that is not email, and delete it here afterwards."
+
+panel-revoke: ## Show how to remove an operator's access
+	@echo "This setup verifies against the CA rather than a revocation list, so"
+	@echo "the way to remove one operator is to reissue the CA and everyone's"
+	@echo "certificates. For a team where that is too coarse, keep an address"
+	@echo "allowlist as the second control and disable the account in the panel:"
+	@echo
+	@echo "  docker compose exec django python manage.py shell -c \\"
+	@echo "    \"from django.contrib.auth.models import User; \\"
+	@echo "     User.objects.filter(username='$(NAME)').update(is_active=False)\""
+
+panel-status: ## Show how the panel is currently exposed
+	docker compose exec django python manage.py shell -c \
+		"from apps.security.selectors import security_summary; \
+		 import json; print(json.dumps(security_summary(), indent=2, default=str))"

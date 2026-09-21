@@ -60,6 +60,9 @@ services:
       - letsencrypt:/etc/letsencrypt:ro
       - ssl_certs:/etc/nginx/ssl:ro
       - nginx_logs:/var/log/nginx
+      # Client-certificate CA for the control panel, when one is configured.
+      # A bind mount so the bundle can be dropped in without a rebuild.
+      - ./gateway/nginx/client-ca:/etc/nginx/client-ca:ro
     depends_on:
       django:
         condition: service_started

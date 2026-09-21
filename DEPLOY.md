@@ -76,8 +76,8 @@ ssh -L 8081:localhost:8081 you@gateway.example.com
 
 Then open **http://localhost:8081** locally.
 
-If you would rather reach it over a LAN or VPN address, set `PANEL_BIND` to that
-address in `.env` — not to `0.0.0.0`, and never without a firewall in front.
+To serve it on a public hostname instead, see **[Part 3](#part-3--publishing-the-control-panel)** —
+it is supported, and it is more involved than changing a bind address.
 
 > **Docker publishes past ufw.** A published port writes its own iptables rules
 > that `ufw deny` does not cover. Binding to a specific address in the compose
@@ -486,3 +486,178 @@ docker compose stop django celery celery-beat
 That is the property worth remembering when something is on fire: the thing
 that routes traffic and the thing that configures it are genuinely separate,
 and only one of them has to be working.
+
+---
+
+# Part 3 — Publishing the control panel
+
+The panel is on loopback by default because reaching it is equivalent to
+controlling every hostname the gateway serves. Putting it on a public name is a
+real increase in exposure, and the honest summary is this: **an SSH tunnel
+remains the safest option, and costs one command.** If you publish anyway —
+because a team needs it, or because tunnels do not survive contact with
+on-call — build it in layers so that defeating one control still leaves the
+others.
+
+## The layers, in the order an attacker meets them
+
+| Layer | What it does | Cost |
+|---|---|---|
+| **Address allowlist** | Nginx refuses the connection. Django checks the same list again. | Breaks access from anywhere unplanned |
+| **Client certificate** | Refused during the TLS handshake — the sign-in form is never reached | Every operator needs a certificate installed |
+| **Password** | 12 characters minimum, validated against common lists | — |
+| **Authenticator app** | Required by default; enforced on every request, not just sign-in | Enrollment, and a recovery path |
+| **Rate limit** | 10 sign-ins per minute per address, burst of 3, at the gateway | — |
+| **Account lockout** | 5 failures locks for 15 minutes, counted per account | A locked-out operator waits |
+| **Session limits** | 60 minutes idle, 12 hours absolute | Signing in again |
+| **Audit trail** | Every change, with actor, address and time. Append-only. | — |
+
+The two that matter most are the first two, because they stop an attacker before
+any code that could have a bug in it runs.
+
+## Publishing, step by step
+
+**1. Add the hostname as a domain and get a certificate for it.**
+
+In the panel: Domains → Add `control.shuvoo.com`, then Certificates → Get a
+certificate. The panel refuses to publish without one — over plain HTTP its
+session cookie is visible to anyone on the path, and that cookie is full control
+of this gateway.
+
+**2. Decide who can connect.**
+
+Security → Publish the panel. Fill in the allowlist with the addresses your
+operators actually come from:
+
+```
+203.0.113.0/24
+198.51.100.17
+```
+
+Leaving it empty works and is the weakest setting available. The panel says so
+on the page rather than letting it pass quietly.
+
+**3. Consider client certificates.**
+
+This is the strongest control here. Someone without a certificate signed by your
+CA is refused during the handshake — no sign-in form, no password guessing, no
+exposure of anything that parses input.
+
+```bash
+make panel-ca                 # once
+make panel-cert NAME=alice    # per operator, produces alice.p12
+```
+
+Import the `.p12` into the operator's browser, then set the CA path in the
+panel to `/etc/nginx/client-ca/panel-ca.pem` and turn on **Require a client
+certificate**.
+
+Back up `gateway/nginx/client-ca/panel-ca.key` somewhere you would keep a root
+password, and nowhere else. Anyone holding it can issue themselves access.
+
+The real cost is revocation: this verifies against the CA rather than a
+revocation list, so removing one operator means reissuing everyone's
+certificates. For a team where that is too coarse, keep the address allowlist as
+the second control and disable the account instead.
+
+**4. Enrol second factors.**
+
+On by default. Every operator meets a mandatory enrollment screen before they
+can use the panel — including accounts that already existed, because the
+requirement is checked on every request rather than only at sign-in.
+
+Recovery codes are shown once and stored hashed. If someone loses both their
+device and their codes, another superuser clears it from Security → Operators,
+and the reset is recorded in the audit trail.
+
+**5. Deploy and check.**
+
+Saving the policy triggers a deploy. Then verify from outside:
+
+```bash
+# Redirects to HTTPS
+curl -sI http://control.shuvoo.com | head -1
+
+# Security headers present
+curl -sI https://control.shuvoo.com | grep -iE 'strict-transport|content-security|x-frame'
+
+# The Django admin is not exposed
+curl -so /dev/null -w '%{http_code}\n' https://control.shuvoo.com/admin/     # 404
+
+# Metrics are not exposed
+curl -so /dev/null -w '%{http_code}\n' https://control.shuvoo.com/metrics    # 404
+
+# From an address outside the allowlist
+curl -so /dev/null -w '%{http_code}\n' https://control.shuvoo.com/           # 403
+```
+
+And from the machine itself:
+
+```bash
+make panel-status
+```
+
+## If you lock yourself out
+
+The loopback listener on port 8081 is deliberately outside all of this. It is
+never generated from the policy, so no setting on the Security page can remove
+it:
+
+```bash
+ssh -L 8081:localhost:8081 you@gateway
+```
+
+That still works with a broken allowlist, a wrong CA, an expired certificate, or
+a policy that refuses every address. From there, undo whatever caused it.
+
+If even the panel is unusable:
+
+```bash
+# Take the panel back off its public name
+docker compose exec django python manage.py shell -c \
+  "from apps.security.models import PanelAccessPolicy; \
+   p = PanelAccessPolicy.load(); p.is_published = False; p.save()"
+make deploy
+
+# Clear a second factor for an operator who lost their device
+docker compose exec django python manage.py shell -c \
+  "from apps.security.models import TotpDevice; \
+   TotpDevice.objects.filter(user__username='alice').delete()"
+
+# Release a locked account early
+docker compose exec django python manage.py shell -c \
+  "from apps.security.models import AccountLock; \
+   AccountLock.objects.filter(username='alice').delete()"
+```
+
+## What this does not do
+
+Worth stating plainly, so nobody assumes otherwise:
+
+- **No certificate revocation list.** Removing one operator's client
+  certificate means reissuing the CA.
+- **No SSO.** Accounts are local to this gateway.
+- **The audit trail is append-only from the application**, but anyone with
+  database access can still edit it. Ship it elsewhere if that matters.
+- **Rate limits are per gateway**, not shared across a pair of them. Two
+  gateways behind one address each allow the configured rate.
+- **`unsafe-inline` remains in the style policy**, because the panel sets some
+  layout values as style attributes. It is not in the script policy, which is
+  where it would actually matter.
+
+## Watching it
+
+The Security page answers "is anyone trying?" — failed attempts in the last 24
+hours, distinct addresses, locked accounts. Sustained failures from many
+addresses is the shape of a real attempt rather than a forgotten password.
+
+```bash
+# Failed sign-ins, from the gateway
+docker compose exec nginx grep -c ' 401 ' /var/log/nginx/panel.access.log
+
+# Rate-limited requests
+docker compose exec nginx grep -c ' 429 ' /var/log/nginx/panel.access.log
+
+# Refused by the allowlist
+docker compose exec nginx grep -c ' 403 ' /var/log/nginx/panel.access.log
+```

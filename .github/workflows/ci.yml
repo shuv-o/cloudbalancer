@@ -1,0 +1,203 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The control plane. SQLite and an in-process cache stand in for Postgres and
+  # Redis; nothing here touches a real gateway.
+  # ---------------------------------------------------------------------------
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: management/requirements.txt
+
+      - name: Install dependencies
+        working-directory: management
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check for missing migrations
+        working-directory: management
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.test
+        run: |
+          python manage.py makemigrations --check --dry-run
+
+      - name: Run tests
+        working-directory: management
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.test
+        run: |
+          python manage.py test --verbosity 2
+
+  # ---------------------------------------------------------------------------
+  # The control panel.
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: Panel build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck and build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Fail if the bundle loads a third-party origin
+        working-directory: frontend
+        run: |
+          # The panel's content security policy is default-src 'none' with no
+          # external origins. A dependency that quietly adds one would not fail
+          # the build -- it would fail in a browser, on the admin surface, after
+          # deployment.
+          if grep -rIoE 'https?://(fonts\.googleapis|fonts\.gstatic|cdn\.|unpkg|jsdelivr)[^"'"'"' ]*' dist/ ; then
+            echo "::error::The built panel references an external origin. The CSP will block it."
+            exit 1
+          fi
+          echo "No third-party origins in the bundle."
+
+  # ---------------------------------------------------------------------------
+  # The gateway configuration, verified by an actual Nginx.
+  #
+  # Every other check in this repository asserts against strings, which catches
+  # a missing directive but not one Nginx rejects. This renders a deliberately
+  # awkward topology and hands the files to the real image, with the traffic
+  # module compiled in -- the only place that check can happen.
+  # ---------------------------------------------------------------------------
+  gateway-config:
+    name: Nginx accepts the generated config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: management/requirements.txt
+
+      - name: Install dependencies
+        working-directory: management
+        run: pip install -r requirements.txt
+
+      - name: Build the gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./gateway/nginx
+          load: true
+          tags: cloudbalancer-nginx:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Render a representative configuration
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.test
+          SQLITE_PATH: ${{ runner.temp }}/ci.sqlite3
+          NGINX_CONF_DIR: ${{ runner.temp }}/conf.d
+          NGINX_SSL_DIR: ${{ runner.temp }}/ssl
+          ACME_WEBROOT_DIR: ${{ runner.temp }}/acme
+        run: |
+          mkdir -p "$NGINX_CONF_DIR" "$NGINX_SSL_DIR" "$ACME_WEBROOT_DIR"
+          python management/manage.py migrate --noinput
+          python deploy/ci_fixture.py "$NGINX_CONF_DIR"
+          cp gateway/nginx/conf.d/default.conf "$NGINX_CONF_DIR/"
+
+      - name: nginx -t
+        run: |
+          # --add-host: nginx resolves upstream hostnames when it loads a
+          # config, so the management upstream in default.conf has to resolve
+          # to something or the test fails for the wrong reason.
+          docker run --rm \
+            --add-host django:127.0.0.1 \
+            -v "${{ runner.temp }}/conf.d:/etc/nginx/conf.d:ro" \
+            -v "${{ runner.temp }}/ssl:${{ runner.temp }}/ssl:ro" \
+            -v "$PWD/gateway/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
+            cloudbalancer-nginx:ci nginx -t
+
+      - name: Show what was verified
+        if: always()
+        run: |
+          echo "### Configuration verified by Nginx" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          wc -l "${{ runner.temp }}"/conf.d/*.conf >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Compose and shell scripts.
+  # ---------------------------------------------------------------------------
+  static:
+    name: Compose and scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the compose files
+        run: |
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.bench.yml config --quiet
+
+      - name: Check shell scripts
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # SC1091: sourced files are resolved at runtime, not here.
+          shellcheck -e SC1091 benchmarks/*.sh deploy/*.sh
+
+      - name: Fail if generated config is tracked
+        run: |
+          # A generated file in the repository is written over the server's own
+          # copy by the deploy checkout, replacing live configuration with
+          # whatever a developer happened to render.
+          managed=$(grep -oE '"[0-9]{2}-[a-z]+\.conf"' \
+            management/apps/gateway/services.py | tr -d '"' | sort -u)
+          failed=0
+          for f in $managed; do
+            if git ls-files --error-unmatch "gateway/nginx/conf.d/$f" >/dev/null 2>&1; then
+              echo "::error::gateway/nginx/conf.d/$f is generated but tracked in git."
+              failed=1
+            fi
+          done
+          [ "$failed" -eq 0 ] && echo "No generated config tracked: $(echo "$managed" | tr '\n' ' ')"
+          exit "$failed"
+
+      - name: Fail if a secret was committed
+        run: |
+          if git ls-files | grep -qE '(^|/)\.env$'; then
+            echo "::error::.env is tracked. It holds credentials and must not be committed."
+            exit 1
+          fi
+          if git ls-files | grep -qE '\.(key|p12|pem)$' | grep -v example; then
+            echo "::error::Key material is tracked."
+            exit 1
+          fi
+          echo "No secrets tracked."

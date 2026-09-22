@@ -1,9 +1,12 @@
 # Generated Nginx configuration. The database is the source of truth; these
 # files are rendered from it on every deploy.
-gateway/nginx/conf.d/00-maps.conf
-gateway/nginx/conf.d/10-upstreams.conf
-gateway/nginx/conf.d/20-servers.conf
-gateway/nginx/conf.d/.backups/
+#
+# Ignore the whole directory and re-admit the one hand-written file, rather
+# than listing the generated ones. A managed file added later is then covered
+# automatically -- and a generated file that reached the repository would be
+# written over the server's own copy by the deploy checkout.
+gateway/nginx/conf.d/*
+!gateway/nginx/conf.d/default.conf
 
 # Secrets
 .env

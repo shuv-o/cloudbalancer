@@ -919,3 +919,163 @@ In order:
 7. **If the sources are too many and too distributed to block**, you have
    reached the limit of what a single gateway can do. Put a scrubbing service
    in front of it.
+
+---
+
+# Part 5 — CI/CD from GitHub
+
+Two workflows. `ci.yml` runs on every push and pull request; `deploy.yml`
+builds images on `main` and rolls them out on a tag or a click.
+
+**Production never builds.** The gateway image compiles the traffic module from
+source — minutes of work that can fail — so it is built once in CI and pulled
+as an artefact. The thing that was tested is the thing that ships, and a
+rollback is pointing at an older tag rather than rebuilding an older commit.
+
+## One-time server setup
+
+On a fresh Ubuntu box, as root:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shuv-o/cloudbalancer/main/deploy/provision-ubuntu.sh \
+  | sudo bash
+```
+
+That installs Docker from Docker's own repository, creates a `deploy` user in
+the `docker` group, clones the repository to `/opt/cloudbalancer`, opens 22, 80
+and 443 in ufw, tunes the kernel for a connection-heavy workload, and turns on
+unattended security upgrades.
+
+Then edit `/opt/cloudbalancer/.env` — every value marked CHANGE ME.
+
+## The deploy key
+
+Generate a key **for this purpose only**, on your own machine:
+
+```bash
+ssh-keygen -t ed25519 -f ./cloudbalancer-deploy -C "github-actions" -N ""
+```
+
+Put the public half on the server:
+
+```bash
+ssh-copy-id -i ./cloudbalancer-deploy.pub deploy@your-server
+```
+
+Then collect the host's fingerprint, so CI is not trusting whatever answers:
+
+```bash
+ssh-keyscan -t ed25519 your-server
+```
+
+## Repository secrets
+
+`Settings → Secrets and variables → Actions`:
+
+| Secret | Value |
+|---|---|
+| `DEPLOY_SSH_KEY` | The **private** half of `cloudbalancer-deploy`, whole file |
+| `DEPLOY_HOST` | The server's address |
+| `DEPLOY_USER` | `deploy` |
+| `DEPLOY_KNOWN_HOSTS` | The `ssh-keyscan` output |
+
+And one variable, under the same settings page:
+
+| Variable | Value |
+|---|---|
+| `PANEL_URL` | Where the panel lives, for the deploy summary link |
+
+No registry credentials are needed. `GITHUB_TOKEN` is issued per run and is
+enough to push to `ghcr.io/shuv-o`.
+
+> The `deploy` user is in the `docker` group, which on any Linux host is
+> equivalent to root. There is no way around that for a Docker-based deploy, so
+> treat `DEPLOY_SSH_KEY` exactly as you would a root key: this repository only,
+> nowhere else, rotated if a collaborator leaves.
+
+## The production environment
+
+`Settings → Environments → New environment → production`.
+
+The deploy job targets it, so protection rules are a repository setting rather
+than a change to the workflow. Worth adding at least:
+
+- **Required reviewers** — a human approves before the gateway changes
+- **Deployment branches** — tags matching `v*` only
+
+## Releasing
+
+```bash
+git tag -a v1.0.0 -m "First production release"
+git push origin v1.0.0
+```
+
+Or `Actions → Deploy → Run workflow` to ship any ref by hand.
+
+A push to `main` builds and pushes images but does not deploy. That is
+deliberate: a proxy in front of everything is the wrong place for push-to-main.
+If you want it anyway, the condition on the deploy job is one line:
+
+```yaml
+# if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+```
+
+## What a deploy does
+
+`deploy/deploy.sh`, on the server:
+
+1. **Pull** the new images. The slow part, and nothing is disturbed while it
+   runs.
+2. **Migrate**, before the new code serves anything. A migration failure stops
+   the deploy rather than leaving a container restart-looping.
+3. **Rebuild the panel bundle** into its volume.
+4. **Start** the new containers. Compose recreates only what changed.
+5. **Verify** — `nginx -t` passes and `/health` answers, retried for a minute.
+6. **Roll back** to the previous tag if verification fails, then verify that
+   too. The tag it rolled back to is recorded in `.deployed-tag`.
+
+## What CI checks
+
+| Job | What it catches |
+|---|---|
+| **Backend tests** | The full suite, plus a missing-migration check |
+| **Panel build** | Typecheck, build, and **any third-party origin in the bundle** — which the panel's CSP would block in a browser, after deployment |
+| **Nginx accepts the generated config** | See below |
+| **Compose and scripts** | Compose validity, shellcheck, no tracked secrets, no tracked generated config |
+
+The third one is the most valuable. Everything else in this repository asserts
+against strings, which catches a missing directive but not one Nginx rejects.
+That job builds the real gateway image, renders a deliberately awkward topology
+— TLS with and without a redirect, header routing, a regex location, a
+streaming route, a published panel with mTLS, a blocked range — and runs
+`nginx -t` against it.
+
+The fixture lives in `deploy/ci_fixture.py`. When you add a feature that
+changes the generated configuration, add it there too; otherwise the check
+keeps passing while covering less.
+
+## Not deployed by this
+
+Deliberately left out of CI's reach:
+
+- **`.env`** on the server. Secrets are not in the repository and not in the
+  pipeline, so a deploy cannot rotate them and a leaked pipeline cannot read
+  them. Change them over SSH.
+- **Certificates.** They live in a Docker volume and renew on their own
+  schedule.
+- **Database contents.** Domains, backends and routes are operational state,
+  not code. They survive every deploy, which is the point of the database being
+  the source of truth.
+
+## Zero downtime, honestly
+
+There isn't any, on a single box. Recreating the Nginx container is a few
+seconds where connections are refused — Compose only recreates it when its
+image or configuration actually changed, so most deploys touch only the control
+plane and the gateway keeps serving throughout.
+
+If those seconds matter, you need a second gateway and a load balancer or a
+health-checked DNS record in front of the pair. That is the same conclusion as
+the single-point-of-failure trade-off in the README, reached from a different
+direction.

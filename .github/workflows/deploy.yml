@@ -1,0 +1,160 @@
+name: Deploy
+
+# Images are built on every push to main so a release is always ready, but
+# nothing reaches the gateway without a tag or a deliberate click. A proxy in
+# front of everything is the wrong place for "push to main, hope for the best".
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Ref to deploy (defaults to the current branch)"
+        required: false
+        type: string
+
+concurrency:
+  # Never two deploys at once. Queued rather than cancelled: a half-applied
+  # rollout is worse than a slow one.
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: shuv-o
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build the three images once, here, and push them.
+  #
+  # The gateway image compiles the traffic module from source, which takes
+  # minutes and can fail. A production box is the wrong place to find that out,
+  # and building here means the artefact that was tested is the artefact that
+  # ships.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build and push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    strategy:
+      matrix:
+        include:
+          - name: nginx
+            context: ./gateway/nginx
+          - name: management
+            context: ./management
+          - name: panel
+            context: ./frontend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - id: meta
+        name: Work out the tag
+        run: |
+          # The commit SHA is the real identity of a release. A branch or
+          # version tag is a convenience that points at one.
+          echo "tag=sha-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.name }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/cloudbalancer-${{ matrix.name }}:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/cloudbalancer-${{ matrix.name }}:${{ github.ref_name }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+          provenance: false
+
+  # ---------------------------------------------------------------------------
+  # Roll it onto the server.
+  #
+  # Guarded by a GitHub environment, so protection rules -- required reviewers,
+  # a wait timer -- are a repository setting rather than a change to this file.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to production
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ vars.PANEL_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Set up the SSH key
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          # Plain openssh rather than a third-party action: this step holds a
+          # key that is effectively root on the gateway, and the fewer things
+          # that touch it the better.
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Update the checkout on the server
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          # The server needs this commit's compose file and deploy script. It
+          # does not build from it -- the images are already pushed.
+          ssh -o BatchMode=yes "${USER}@${HOST}" \
+            "cd /opt/cloudbalancer \
+             && git fetch --quiet origin \
+             && git checkout --quiet --force ${SHA} \
+             && git --no-pager log -1 --oneline"
+
+      - name: Deploy
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          TAG: ${{ needs.build.outputs.tag }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ssh -o BatchMode=yes "${USER}@${HOST}" bash -s <<EOF
+            set -euo pipefail
+            echo "${REGISTRY_TOKEN}" | docker login ${{ env.REGISTRY }} \
+              -u ${{ github.actor }} --password-stdin
+            export REGISTRY=${{ env.REGISTRY }}/${{ env.OWNER }}
+            /opt/cloudbalancer/deploy/deploy.sh "${TAG}"
+          EOF
+
+      - name: Report
+        if: always()
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          {
+            echo "### Gateway state"
+            echo '```'
+            ssh -o BatchMode=yes "${USER}@${HOST}" \
+              "cd /opt/cloudbalancer && docker compose ps --format 'table {{.Service}}\t{{.Status}}'" \
+              2>&1 || echo "could not reach the server"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

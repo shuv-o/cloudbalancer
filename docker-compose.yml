@@ -20,6 +20,7 @@
 name: cloudbalancer
 
 x-management: &management
+  image: ${REGISTRY:-ghcr.io/shuv-o}/cloudbalancer-management:${IMAGE_TAG:-local}
   build:
     context: ./management
     dockerfile: Dockerfile
@@ -42,12 +43,12 @@ services:
   # Data plane
   # ---------------------------------------------------------------------------
   nginx:
+    image: ${REGISTRY:-ghcr.io/shuv-o}/cloudbalancer-nginx:${IMAGE_TAG:-local}
     build:
       context: ./gateway/nginx
       dockerfile: Dockerfile
       args:
         NGINX_VERSION: ${NGINX_VERSION:-1.27.4}
-    image: cloudbalancer/nginx:vts
     container_name: cloudbalancer-nginx
     ports:
       - "80:80"
@@ -140,6 +141,7 @@ services:
   # Control panel — builds the bundle, drops it in a volume, exits.
   # ---------------------------------------------------------------------------
   panel:
+    image: ${REGISTRY:-ghcr.io/shuv-o}/cloudbalancer-panel:${IMAGE_TAG:-local}
     build:
       context: ./frontend
       dockerfile: Dockerfile

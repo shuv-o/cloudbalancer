@@ -315,6 +315,22 @@ and the blocklist emits nothing at all when it is empty. Every rate limit uses
 queues would convert itself into the latency it was meant to prevent. Measure
 it with `make bench-protection`.
 
+## Continuous deployment
+
+Two GitHub Actions workflows. `ci.yml` runs the suite, builds the panel, and —
+the part that matters most — builds the real gateway image and runs `nginx -t`
+against a rendered configuration. Every other check here asserts against
+strings; that one asks Nginx.
+
+`deploy.yml` builds the three images, pushes them to `ghcr.io/shuv-o`, and
+rolls them onto an Ubuntu server over SSH. Production never builds: the image
+that was tested is the image that ships, and a rollback points at an older tag
+rather than rebuilding an older commit. A deploy that fails its health check
+puts the previous release back on its own.
+
+`deploy/provision-ubuntu.sh` prepares a fresh server. See
+[DEPLOY.md](DEPLOY.md) for the secrets and the release flow.
+
 ## Known trade-offs
 
 **One gateway is a single point of failure.** One A record, one machine. The HA

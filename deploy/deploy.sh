@@ -47,8 +47,14 @@ compose "$TAG" pull --quiet nginx django celery celery-beat panel
 # on start, but running them here first means a migration failure stops the
 # deploy rather than leaving a container restart-looping.
 # ---------------------------------------------------------------------------
+log "Starting the data stores"
+compose "$TAG" up -d postgres redis
+
 log "Applying migrations"
-compose "$TAG" run --rm --no-deps django python manage.py migrate --noinput
+# No --no-deps: compose then honours depends_on and waits for Postgres to
+# report healthy, which on a first deploy is the difference between migrating
+# and failing to connect to a database that was never started.
+compose "$TAG" run --rm django python manage.py migrate --noinput
 
 log "Rebuilding the control panel bundle"
 compose "$TAG" up --no-build --force-recreate panel
@@ -60,16 +66,38 @@ compose "$TAG" up -d --no-build --remove-orphans
 # Verify. A container that started is not the same as a gateway that works.
 # ---------------------------------------------------------------------------
 verify() {
-    # Up to a minute: Postgres may be applying migrations and Nginx needs a
-    # moment to bind after a recreate.
-    for _ in $(seq 1 30); do
-        if docker compose exec -T nginx nginx -t >/dev/null 2>&1 \
-           && curl -fsS --max-time 3 http://localhost/health >/dev/null 2>&1; then
+    # Up to three minutes. A first deploy applies every migration and collects
+    # static files before gunicorn binds, and reporting success before that
+    # finishes is how a deploy "succeeds" into a panel that answers 502.
+    local waited=0
+    for _ in $(seq 1 90); do
+        if gateway_ok && control_plane_ok; then
             return 0
+        fi
+        waited=$((waited + 2))
+        if (( waited % 30 == 0 )); then
+            echo "  still waiting (${waited}s): $(state_summary)"
         fi
         sleep 2
     done
     return 1
+}
+
+gateway_ok() {
+    docker compose exec -T nginx nginx -t >/dev/null 2>&1 \
+        && curl -fsS --max-time 3 http://localhost/health >/dev/null 2>&1
+}
+
+control_plane_ok() {
+    # The panel is unusable until this answers, so a deploy is not finished
+    # until it does.
+    [[ "$(docker inspect -f '{{.State.Health.Status}}' cloudbalancer-django 2>/dev/null)" == "healthy" ]]
+}
+
+state_summary() {
+    printf 'nginx=%s django=%s' \
+        "$(docker inspect -f '{{.State.Status}}' cloudbalancer-nginx 2>/dev/null || echo absent)" \
+        "$(docker inspect -f '{{.State.Health.Status}}' cloudbalancer-django 2>/dev/null || echo absent)"
 }
 
 log "Verifying"
@@ -89,7 +117,8 @@ fi
 # Rollback.
 # ---------------------------------------------------------------------------
 echo "::error::Verification failed after deploying ${TAG}" >&2
-docker compose logs --tail 40 nginx django >&2 || true
+echo "State: $(state_summary)" >&2
+docker compose logs --tail 60 django nginx >&2 || true
 
 if [[ -z "$previous" ]]; then
     echo "No previous release recorded, so there is nothing to roll back to." >&2

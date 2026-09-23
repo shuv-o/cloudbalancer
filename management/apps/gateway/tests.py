@@ -628,3 +628,43 @@ class WebSocketTests(TestCase):
 
         self.assertIn("limit_conn per_ip_conn", config)
         self.assertIn("limit_req  zone=per_ip_req", config)
+
+
+class ControlPlaneUnreachableTests(TestCase):
+    """
+    What the panel says when the management API is not answering.
+
+    Django runs migrations, collects static files and bootstraps before
+    gunicorn binds, which on a first deploy is a minute of the panel being
+    reachable while its API is not. A bare 502 during that window is
+    indistinguishable from a broken install, so the response says which it is.
+    """
+
+    def setUp(self):
+        domain = domain_create(name="control.example.com")
+        from apps.certificates.services import certificate_generate_self_signed
+        from apps.security.models import PanelAccessPolicy
+        from apps.security.services import policy_update
+
+        certificate_generate_self_signed(domain=domain)
+        policy_update(
+            policy=PanelAccessPolicy.load(),
+            data={"panel_domain": "control.example.com", "is_published": True},
+        )
+        self.config = config_render()["05-panel.conf"]
+
+    def test_upstream_failures_are_intercepted(self):
+        self.assertIn("proxy_intercept_errors on;", self.config)
+        self.assertIn("error_page 502 503 504 = @management_api_down;", self.config)
+
+    def test_the_fallback_names_the_command_that_diagnoses_it(self):
+        self.assertIn("location @management_api_down {", self.config)
+        self.assertIn("docker compose logs --tail 50 django", self.config)
+
+    def test_it_answers_503_rather_than_502(self):
+        """
+        503 is the honest code: the service exists and is temporarily unable to
+        handle the request, which is exactly the state during a first deploy.
+        """
+        block = self.config[self.config.index("location @management_api_down"):]
+        self.assertIn("return 503", block[:400])

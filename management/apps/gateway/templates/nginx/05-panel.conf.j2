@@ -150,6 +150,18 @@ server {
         proxy_set_header X-Forwarded-For   $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 120s;
+
+        proxy_intercept_errors on;
+        error_page 502 503 504 = @management_api_down;
+    }
+
+    # A bare 502 here says only "something upstream is unwell", which on a
+    # first deploy is indistinguishable from a broken install. Django spends a
+    # minute migrating before gunicorn binds, so the common case is simply
+    # "not yet" -- and the response should say so.
+    location @management_api_down {
+        default_type application/json;
+        return 503 '{"error":"The management API is not responding.","hint":"It may still be starting: migrations run before it binds. Check with: docker compose ps django && docker compose logs --tail 50 django"}';
     }
 
 {% if panel.expose_django_admin %}

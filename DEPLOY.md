@@ -428,6 +428,60 @@ make bench-up
 RATE=5000 DURATION=60s make bench
 ```
 
+### The panel returns 502 or 503
+
+The panel is reachable and its API is not. The static bundle is served by Nginx
+directly; anything under `/api/` is proxied to Django, so this is Django.
+
+**First, is it simply still starting?** Django applies migrations, collects
+static files and bootstraps before gunicorn binds. On a first deploy against an
+empty database that is comfortably a minute, and the panel answers 502 for all
+of it.
+
+```bash
+docker compose ps django
+```
+
+| Status | Meaning |
+|---|---|
+| `Up (health: starting)` | Still working. Wait; the health check allows two minutes. |
+| `Up (healthy)` | Django is fine — the problem is elsewhere, read on. |
+| `Restarting` | It is crash-looping. The logs say why. |
+| `Exited` | It gave up. The logs say why. |
+
+```bash
+docker compose logs --tail 80 django
+```
+
+The three things that usually appear there:
+
+**`FATAL: password authentication failed`** — `POSTGRES_PASSWORD` in `.env`
+does not match what the database was initialised with. Postgres only reads that
+variable when it creates the data directory, so changing it later has no
+effect. Either put the original password back, or start over:
+
+```bash
+docker compose down
+docker volume rm cloudbalancer_postgres_data   # destroys the database
+docker compose up -d
+```
+
+**`could not translate host name "postgres"`** — the database container is not
+running. `docker compose ps postgres`, and check its logs.
+
+**`django.db.utils.ProgrammingError` during migrate** — a migration failed
+part-way. The logs name the migration.
+
+If Django is healthy but the panel still fails, the request is not reaching it:
+
+```bash
+# Can Nginx see Django at all?
+docker compose exec nginx wget -qO- http://django:8000/api/v1/auth/me/
+
+# What did Nginx record?
+docker compose exec nginx tail -20 /var/log/nginx/panel.error.log
+```
+
 ### The panel will not load or will not sign in
 
 ```bash

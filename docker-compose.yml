@@ -70,6 +70,10 @@ services:
       # A bind mount so the bundle can be dropped in without a rebuild.
       - ./gateway/nginx/client-ca:/etc/nginx/client-ca:ro
     depends_on:
+      # service_started, not service_healthy, and deliberately. Proxied traffic
+      # does not involve the control plane, so a sick Django must not stop the
+      # gateway from serving. The panel returns 503 until Django answers; every
+      # other domain is unaffected.
       django:
         condition: service_started
       panel:
@@ -118,6 +122,22 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+    healthcheck:
+      # Any HTTP response means the stack from socket to middleware is up. A
+      # 403 from the address allowlist still proves Django is answering, so the
+      # check deliberately accepts it.
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request,urllib.error,sys;
+          req=urllib.request.Request('http://127.0.0.1:8000/api/v1/auth/me/');
+          exec('try:\n urllib.request.urlopen(req,timeout=5)\nexcept urllib.error.HTTPError:\n pass\nexcept Exception:\n sys.exit(1)')"
+      interval: 10s
+      timeout: 6s
+      retries: 3
+      # Generous: the first boot of an empty database applies every migration
+      # before gunicorn binds.
+      start_period: 120s
 
   celery:
     <<: *management

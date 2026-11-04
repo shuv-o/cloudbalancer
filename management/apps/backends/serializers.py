@@ -35,6 +35,16 @@ class BackendInputSerializer(serializers.Serializer):
     description = serializers.CharField(
         required=False, allow_blank=True, default=""
     )
+    scheme = serializers.ChoiceField(
+        choices=Backend.Scheme.choices, default=Backend.Scheme.HTTP
+    )
+    tls_verify = serializers.BooleanField(required=False, default=False)
+    tls_trusted_ca_path = serializers.CharField(
+        max_length=512, required=False, allow_blank=True, default=""
+    )
+    tls_server_name = serializers.CharField(
+        max_length=253, required=False, allow_blank=True, default=""
+    )
     lb_method = serializers.ChoiceField(
         choices=Backend.LBMethod.choices,
         default=Backend.LBMethod.ROUND_ROBIN,
@@ -91,7 +101,9 @@ class BackendOutputSerializer(serializers.ModelSerializer):
     class Meta:
         model = Backend
         fields = [
-            "id", "name", "description", "lb_method", "lb_method_label",
+            "id", "name", "description",
+            "scheme", "tls_verify", "tls_trusted_ca_path", "tls_server_name",
+            "lb_method", "lb_method_label",
             "keepalive_connections", "keepalive_requests", "keepalive_timeout",
             "drain_unhealthy", "unhealthy_threshold", "healthy_threshold",
             "health_check_enabled", "health_check_path",

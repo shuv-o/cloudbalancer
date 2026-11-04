@@ -668,3 +668,128 @@ class ControlPlaneUnreachableTests(TestCase):
         """
         block = self.config[self.config.index("location @management_api_down"):]
         self.assertIn("return 503", block[:400])
+
+
+class HttpsUpstreamTests(TestCase):
+    """
+    Reaching a backend over TLS.
+
+    The case this exists for is a backend that is itself a router -- Traefik,
+    another Nginx -- terminating TLS of its own. Getting SNI wrong there does
+    not fail loudly: the handshake succeeds, the router finds no rule matching
+    an IP address, and returns 404 as though the application were missing.
+    """
+
+    def setUp(self):
+        self.domain = domain_create(name="app.example.com")
+
+    def _render(self, **backend_kwargs):
+        backend = backend_create(name="edge", **backend_kwargs)
+        instance_add(backend=backend, address="10.0.1.11", port=443)
+        rule_create(domain_id=self.domain.id, backend_id=backend.id, match_value="/")
+        return config_render()["20-servers.conf"]
+
+    def test_http_remains_the_default(self):
+        """TLS terminates once, at the gateway, unless asked otherwise."""
+        config = self._render()
+
+        self.assertIn("proxy_pass http://edge;", config)
+        self.assertNotIn("proxy_ssl_server_name", config)
+
+    def test_https_sends_the_requested_hostname_as_sni(self):
+        """
+        Not the upstream's address. A router on the other end matches on the
+        name, and an IP matches nothing -- which looks exactly like the
+        application having gone missing.
+        """
+        config = self._render(scheme="https")
+
+        self.assertIn("proxy_pass https://edge;", config)
+        self.assertIn("proxy_ssl_server_name on;", config)
+        self.assertIn("proxy_ssl_name        $host;", config)
+
+    def test_sni_can_be_overridden(self):
+        config = self._render(scheme="https", tls_server_name="internal.lan")
+        self.assertIn("proxy_ssl_name        internal.lan;", config)
+
+    def test_sessions_are_reused(self):
+        """
+        What keeps a TLS hop affordable: one handshake per connection, and the
+        connection is held open by the keepalive pool.
+        """
+        config = self._render(scheme="https")
+        self.assertIn("proxy_ssl_session_reuse on;", config)
+
+    def test_verification_is_off_unless_asked_for(self):
+        """
+        An internal backend usually presents a self-signed certificate.
+        Failing closed on that takes the route down rather than securing it.
+        """
+        self.assertIn("proxy_ssl_verify off;", self._render(scheme="https"))
+
+    def test_verification_can_be_turned_on_with_a_ca(self):
+        config = self._render(
+            scheme="https", tls_verify=True, tls_trusted_ca_path="/etc/nginx/ssl/edge-ca.pem"
+        )
+
+        self.assertIn("proxy_ssl_verify       on;", config)
+        self.assertIn("proxy_ssl_trusted_certificate /etc/nginx/ssl/edge-ca.pem;", config)
+
+
+class AcmeChallengePassthroughTests(TestCase):
+    """
+    Letting a backend obtain certificates of its own.
+
+    Once DNS points at this gateway, a backend that manages its own
+    certificates can no longer complete an HTTP-01 challenge -- the authority
+    resolves the name here, and this gateway answers. Passthrough gives the
+    path back without taking it away from this gateway's own renewals.
+    """
+
+    def setUp(self):
+        self.backend = backend_create(name="edge")
+        instance_add(backend=self.backend, address="10.0.1.11", port=80)
+
+    def _render(self, **domain_kwargs):
+        domain = domain_create(name="app.example.com", **domain_kwargs)
+        rule_create(domain_id=domain.id, backend_id=self.backend.id, match_value="/")
+        return config_render()["20-servers.conf"]
+
+    def test_challenges_are_answered_locally_by_default(self):
+        config = self._render()
+
+        self.assertIn("try_files $uri =404;", config)
+        self.assertNotIn("@acme_backend", config)
+
+    def test_passthrough_tries_our_token_first(self):
+        """
+        Order matters. If the backend were tried first, this gateway could
+        never complete a renewal of its own.
+        """
+        config = self._render(acme_challenge_passthrough=True)
+
+        self.assertIn("try_files $uri @acme_backend;", config)
+        self.assertIn("location @acme_backend {", config)
+
+    def test_the_challenge_follows_the_backend_scheme(self):
+        """
+        A plaintext request to a backend listening on 443 fails at the
+        handshake, which looks nothing like the actual problem.
+        """
+        tls_backend = backend_create(name="edge-tls", scheme="https")
+        instance_add(backend=tls_backend, address="10.0.1.12", port=443)
+        domain = domain_create(name="tls.example.com", acme_challenge_passthrough=True)
+        rule_create(domain_id=domain.id, backend_id=tls_backend.id, match_value="/")
+
+        config = config_render()["20-servers.conf"]
+        block = config[config.index("location @acme_backend"):]
+        self.assertIn("proxy_pass https://edge_tls;", block[:400])
+
+    def test_passthrough_without_a_route_renders_nothing(self):
+        """Nowhere to fall through to, so the option is simply inactive."""
+        domain_create(name="noroutes.example.com", acme_challenge_passthrough=True)
+        self.assertNotIn("@acme_backend", config_render()["20-servers.conf"])
+
+    def test_the_challenge_path_stays_on_plain_http(self):
+        config = self._render(acme_challenge_passthrough=True)
+        self.assertIn("proxy_set_header X-Forwarded-Proto http;", config)

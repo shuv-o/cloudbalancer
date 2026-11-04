@@ -70,9 +70,37 @@
         rewrite ^{{ rule.match_value }}/?(.*)$ /$1 break;
 {% endif %}
 {% if rule.header_routes %}
-        proxy_pass http://$target_{{ rule.slug }};
+        proxy_pass {{ rule.scheme }}://$target_{{ rule.slug }};
 {% else %}
-        proxy_pass http://{{ rule.upstream_name }};
+        proxy_pass {{ rule.scheme }}://{{ rule.upstream_name }};
+{% endif %}
+{% if rule.scheme == "https" %}
+
+        # The backend speaks TLS. SNI carries the hostname the client asked
+        # for, not the upstream's address, because a router on the other end
+        # matches on that name -- without it every request looks like a
+        # request for an IP and matches nothing.
+        proxy_ssl_server_name on;
+        proxy_ssl_name        {{ rule.tls_server_name }};
+
+        # Reusing the session is what keeps a TLS hop affordable: the
+        # handshake happens once per connection, and the connection is held
+        # open by the upstream keepalive pool.
+        proxy_ssl_session_reuse on;
+        proxy_ssl_protocols     TLSv1.2 TLSv1.3;
+{% if rule.tls_verify %}
+        proxy_ssl_verify       on;
+        proxy_ssl_verify_depth 2;
+{% if rule.tls_trusted_ca_path %}
+        proxy_ssl_trusted_certificate {{ rule.tls_trusted_ca_path }};
+{% endif %}
+{% else %}
+        # Not verified. An internal backend usually presents a self-signed or
+        # private-CA certificate, and failing closed on that takes the route
+        # down rather than making it safer. Turn verification on, with a CA
+        # bundle, where the network between here and the backend is not yours.
+        proxy_ssl_verify off;
+{% endif %}
 {% endif %}
 
 {{ proxy_headers(rule) }}
@@ -155,8 +183,36 @@ server {
         root {{ acme_webroot }};
         default_type "text/plain";
         access_log off;
+{% if domain.acme_challenge_passthrough %}
+        # Our own token wins when there is one; anything else goes to the
+        # backend. Both this gateway and a backend managing its own
+        # certificates can then complete a challenge, because neither takes
+        # the path away from the other.
+        try_files $uri @acme_backend;
+{% else %}
         try_files $uri =404;
+{% endif %}
     }
+{% if domain.acme_challenge_passthrough %}
+
+    location @acme_backend {
+        proxy_pass {{ domain.acme_scheme }}://{{ domain.acme_upstream }};
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host            $host;
+        proxy_set_header X-Real-IP       $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # The authority reached us over plain HTTP on port 80, whatever
+        # scheme we then use to reach the backend.
+        proxy_set_header X-Forwarded-Proto http;
+{% if domain.acme_scheme == "https" %}
+        proxy_ssl_server_name on;
+        proxy_ssl_name        $host;
+        proxy_ssl_verify      off;
+{% endif %}
+        access_log off;
+    }
+{% endif %}
 
 {% if domain.ssl_enabled and domain.force_ssl_redirect %}
     location / {

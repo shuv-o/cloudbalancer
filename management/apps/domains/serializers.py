@@ -12,6 +12,7 @@ class DomainInputSerializer(serializers.Serializer):
     ssl_cert_path = serializers.CharField(required=False, default="", allow_blank=True)
     ssl_key_path = serializers.CharField(required=False, default="", allow_blank=True)
     force_ssl_redirect = serializers.BooleanField(required=False, default=True)
+    acme_challenge_passthrough = serializers.BooleanField(required=False, default=False)
     is_active = serializers.BooleanField(required=False, default=True)
 
 
@@ -38,6 +39,7 @@ class DomainOutputSerializer(serializers.ModelSerializer):
         fields = [
             "id", "name", "description",
             "ssl_enabled", "ssl_cert_path", "ssl_key_path", "force_ssl_redirect",
+            "acme_challenge_passthrough",
             "is_active", "created_at", "updated_at",
             "rule_count", "active_rule_count", "certificate",
         ]

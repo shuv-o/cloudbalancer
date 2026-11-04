@@ -139,6 +139,30 @@ Two interactions worth knowing:
 If a backend keeps per-connection state that its HTTP requests also need, set
 that backend's balancing to **Client IP** so both land on the same instance.
 
+## Backends that speak HTTPS
+
+A backend is reached over plain HTTP by default: TLS terminates once, at the
+gateway, and on a network you control the hop costs nothing. That is what
+keeps it sub-millisecond.
+
+Set a backend's protocol to HTTPS when it insists, or when the network between
+here and it is not yours. The gateway then sends **the hostname the client
+asked for** as SNI, because a backend that routes by hostname matches on that
+name — an IP address matches nothing, and the failure looks like the
+application having gone missing rather than like a TLS problem. Certificate
+verification is off by default, since an internal backend usually presents a
+self-signed certificate and failing closed would take the route down rather
+than secure it.
+
+Sessions are reused, so one handshake covers a whole connection and the
+keepalive pool holds that connection open.
+
+**A backend can keep renewing its own certificates.** Once DNS points here, it
+can no longer answer an HTTP-01 challenge on its own — the authority resolves
+the name to this gateway. Turning on challenge passthrough for a domain makes
+the gateway serve its own token when it has one and forward the request
+otherwise, so both can renew and neither takes the path from the other.
+
 ## Caching
 
 Off by default, on per route. Once on:

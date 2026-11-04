@@ -32,6 +32,16 @@ class Domain(models.Model):
         help_text="301 redirect HTTP → HTTPS when SSL is enabled",
     )
 
+    acme_challenge_passthrough = models.BooleanField(
+        default=False,
+        help_text=(
+            "Let the backend answer certificate challenges this gateway has no "
+            "token for. The gateway still serves its own, so both it and a "
+            "backend that manages its own certificates -- Traefik, say -- can "
+            "each complete a challenge without taking the path from the other."
+        ),
+    )
+
     # State
     is_active = models.BooleanField(default=True, db_index=True)
 

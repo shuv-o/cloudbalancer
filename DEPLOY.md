@@ -372,6 +372,51 @@ upstream NAT, not the gateway.
 The error says so explicitly. Switch to staging, fix the real problem there,
 then come back.
 
+### A backend router answers 404 for everything
+
+Traefik, another Nginx, anything that routes by hostname. The request arrives;
+no rule matches it.
+
+Two causes, and they look identical from outside.
+
+**The backend's routers are on its HTTPS entrypoint.** It used to face the
+internet and terminate TLS itself. Now this gateway terminates TLS and forwards
+plain HTTP on port 80, where that backend has no router at all. In Traefik:
+
+```yaml
+traefik.http.routers.app.entrypoints=web          # add web
+# traefik.http.routers.app.tls=true               # remove
+# traefik.http.routers.app.tls.certresolver=le    # remove
+```
+
+**Or the hostname is not reaching it.** Check from the gateway, with your real
+hostname:
+
+```bash
+docker compose exec nginx wget -S -O- --timeout=5 \
+  --header="Host: app.example.com" http://10.0.1.11/ 2>&1 | head -20
+```
+
+`404` means the backend has no rule for that name. `200` means the Host is
+fine and the problem is elsewhere. `301` means it wants HTTPS.
+
+If it does want HTTPS, set the backend's **Protocol** to HTTPS on its page.
+The gateway then sends the client's hostname as SNI, which is what the backend
+matches on — an IP address matches nothing, and the symptom is the same 404.
+
+### A backend cannot renew its own certificates
+
+Once DNS points at this gateway, a backend that manages its own certificates
+can no longer complete an HTTP-01 challenge: the authority resolves the name
+here, and this gateway answers the challenge path.
+
+Turn on **Let the backend get its own certificates** for that domain. The
+gateway serves its own token when it has one and forwards the request
+otherwise, so both can renew without taking the path from each other.
+
+It follows the backend's own protocol, so a backend reachable only on 443 is
+reached over HTTPS for the challenge too.
+
 ### A WebSocket connects and then drops
 
 Almost always the idle timeout. Turn on **Stream the response** for the route

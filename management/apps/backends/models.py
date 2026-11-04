@@ -28,6 +28,47 @@ class Backend(models.Model):
     )
     description = models.TextField(blank=True, default="")
 
+    class Scheme(models.TextChoices):
+        HTTP = "http", "HTTP"
+        HTTPS = "https", "HTTPS"
+
+    scheme = models.CharField(
+        max_length=5,
+        choices=Scheme.choices,
+        default=Scheme.HTTP,
+        help_text=(
+            "How to reach this backend. Plain HTTP is right for a service on a "
+            "trusted LAN -- TLS terminates once, at the gateway, and the hop "
+            "costs nothing. Choose HTTPS when the backend insists on it, or "
+            "when the network between here and it is not yours."
+        ),
+    )
+    tls_verify = models.BooleanField(
+        default=False,
+        help_text=(
+            "Check the backend's certificate against a trusted CA. Off by "
+            "default because an internal backend usually presents a self-signed "
+            "or private-CA certificate, and failing closed on that would take "
+            "the route down rather than secure it."
+        ),
+    )
+    tls_trusted_ca_path = models.CharField(
+        max_length=512,
+        blank=True,
+        default="",
+        help_text="PEM bundle to verify the backend against, when verification is on",
+    )
+    tls_server_name = models.CharField(
+        max_length=253,
+        blank=True,
+        default="",
+        help_text=(
+            "SNI to send to the backend. Blank forwards the hostname the client "
+            "asked for, which is what a backend router like Traefik needs in "
+            "order to match its own rules."
+        ),
+    )
+
     # Load balancing
     lb_method = models.CharField(
         max_length=20,

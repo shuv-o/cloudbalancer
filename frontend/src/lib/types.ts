@@ -31,6 +31,7 @@ export interface Domain {
   ssl_cert_path: string;
   ssl_key_path: string;
   force_ssl_redirect: boolean;
+  acme_challenge_passthrough: boolean;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -62,6 +63,10 @@ export interface Backend {
   id: number;
   name: string;
   description: string;
+  scheme: "http" | "https";
+  tls_verify: boolean;
+  tls_trusted_ca_path: string;
+  tls_server_name: string;
   lb_method: "round_robin" | "least_conn" | "ip_hash";
   lb_method_label: string;
   keepalive_connections: number;

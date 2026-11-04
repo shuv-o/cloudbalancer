@@ -10,6 +10,7 @@ interface DraftDomain {
   name: string;
   description: string;
   force_ssl_redirect: boolean;
+  acme_challenge_passthrough: boolean;
   is_active: boolean;
 }
 
@@ -17,6 +18,7 @@ const BLANK: DraftDomain = {
   name: "",
   description: "",
   force_ssl_redirect: true,
+  acme_challenge_passthrough: false,
   is_active: true,
 };
 
@@ -102,6 +104,13 @@ function DomainForm({
           help="Applies once a certificate exists. Challenge requests are always answered over plain HTTP, so renewals keep working."
           checked={draft.force_ssl_redirect}
           onChange={(v) => setDraft({ ...draft, force_ssl_redirect: v })}
+        />
+
+        <Check
+          label="Let the backend get its own certificates"
+          help="Forwards certificate challenges this gateway has no answer for. Turn this on when the backend manages its own certificates — a Traefik or another proxy that used to face the internet and still needs to renew."
+          checked={draft.acme_challenge_passthrough}
+          onChange={(v) => setDraft({ ...draft, acme_challenge_passthrough: v })}
         />
 
         <Check
@@ -256,6 +265,7 @@ export function Domains() {
             name: editing.name,
             description: editing.description,
             force_ssl_redirect: editing.force_ssl_redirect,
+            acme_challenge_passthrough: editing.acme_challenge_passthrough,
             is_active: editing.is_active,
           }}
           existing={editing}

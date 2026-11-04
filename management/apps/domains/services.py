@@ -18,6 +18,7 @@ def domain_create(
     ssl_cert_path: str = "",
     ssl_key_path: str = "",
     force_ssl_redirect: bool = True,
+    acme_challenge_passthrough: bool = False,
     is_active: bool = True,
 ) -> Domain:
     """Create a new domain."""
@@ -28,6 +29,7 @@ def domain_create(
         ssl_cert_path=ssl_cert_path,
         ssl_key_path=ssl_key_path,
         force_ssl_redirect=force_ssl_redirect,
+        acme_challenge_passthrough=acme_challenge_passthrough,
         is_active=is_active,
     )
     domain.full_clean()
@@ -48,6 +50,7 @@ def domain_update(*, domain: Domain, data: dict) -> Domain:
         "ssl_cert_path",
         "ssl_key_path",
         "force_ssl_redirect",
+        "acme_challenge_passthrough",
         "is_active",
     ]
     instance, _ = model_update(instance=domain, fields=updatable_fields, data=data)

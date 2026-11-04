@@ -26,6 +26,10 @@ const LB_METHODS = [
 interface DraftBackend {
   name: string;
   description: string;
+  scheme: string;
+  tls_verify: boolean;
+  tls_trusted_ca_path: string;
+  tls_server_name: string;
   lb_method: string;
   keepalive_connections: number;
   keepalive_requests: number;
@@ -41,6 +45,10 @@ interface DraftBackend {
 const BLANK: DraftBackend = {
   name: "",
   description: "",
+  scheme: "http",
+  tls_verify: false,
+  tls_trusted_ca_path: "",
+  tls_server_name: "",
   lb_method: "round_robin",
   keepalive_connections: 32,
   keepalive_requests: 1000,
@@ -139,6 +147,67 @@ function BackendForm({
             onChange={(e) => setDraft({ ...draft, description: e.target.value })}
           />
         </Field>
+
+        <h3 style={{ fontSize: "0.86rem", margin: "20px 0 10px", color: "var(--text-dim)" }}>
+          How to reach it
+        </h3>
+
+        <Field
+          label="Protocol"
+          help={
+            draft.scheme === "http"
+              ? "Right for a service on a network you control. TLS terminates once, at this gateway, and the hop costs nothing."
+              : "The gateway opens a TLS connection to the backend. Use this when the backend insists on it, or the network between here and it is not yours."
+          }
+        >
+          <select
+            className="select"
+            value={draft.scheme}
+            onChange={(e) => setDraft({ ...draft, scheme: e.target.value })}
+          >
+            <option value="http">HTTP</option>
+            <option value="https">HTTPS</option>
+          </select>
+        </Field>
+
+        {draft.scheme === "https" && (
+          <>
+            <Field
+              label="Send this hostname to the backend"
+              help="Leave empty to forward whatever the client asked for. A backend that routes by hostname — Traefik, another Nginx — needs that name, or it matches nothing and answers 404."
+            >
+              <input
+                className="input input--mono"
+                value={draft.tls_server_name}
+                placeholder="(the client's hostname)"
+                onChange={(e) => setDraft({ ...draft, tls_server_name: e.target.value })}
+              />
+            </Field>
+
+            <Check
+              label="Check the backend's certificate"
+              help="Off by default: an internal backend usually presents a self-signed certificate, and failing closed on that takes the route down rather than making it safer."
+              checked={draft.tls_verify}
+              onChange={(v) => setDraft({ ...draft, tls_verify: v })}
+            />
+
+            {draft.tls_verify && (
+              <Field
+                label="CA bundle path"
+                help="A PEM file inside the gateway container that signs the backend's certificate."
+              >
+                <input
+                  className="input input--mono"
+                  value={draft.tls_trusted_ca_path}
+                  placeholder="/etc/nginx/ssl/backend-ca.pem"
+                  onChange={(e) =>
+                    setDraft({ ...draft, tls_trusted_ca_path: e.target.value })
+                  }
+                />
+              </Field>
+            )}
+          </>
+        )}
 
         <h3 style={{ fontSize: "0.86rem", margin: "20px 0 10px", color: "var(--text-dim)" }}>
           Connection reuse
@@ -467,6 +536,7 @@ export function Backends() {
                 title={backend.name}
                 hint={
                   <>
+                    {backend.scheme === "https" ? "HTTPS · " : ""}
                     {backend.lb_method_label} · keepalive {backend.keepalive_connections}
                     {backend.description && ` · ${backend.description}`}
                   </>
@@ -605,6 +675,10 @@ export function Backends() {
           initial={{
             name: editingBackend.name,
             description: editingBackend.description,
+            scheme: editingBackend.scheme,
+            tls_verify: editingBackend.tls_verify,
+            tls_trusted_ca_path: editingBackend.tls_trusted_ca_path,
+            tls_server_name: editingBackend.tls_server_name,
             lb_method: editingBackend.lb_method,
             keepalive_connections: editingBackend.keepalive_connections,
             keepalive_requests: editingBackend.keepalive_requests,

@@ -126,6 +126,12 @@ def _rule_context(rule: RoutingRule) -> dict:
         "priority": rule.priority,
         "backend_name": rule.backend.name,
         "upstream_name": rule.backend.upstream_name,
+        "scheme": rule.backend.scheme,
+        "tls_verify": rule.backend.tls_verify,
+        "tls_trusted_ca_path": rule.backend.tls_trusted_ca_path,
+        # Blank means "forward whatever the client asked for", which is what a
+        # backend router needs to match its own rules.
+        "tls_server_name": rule.backend.tls_server_name or "$host",
         "cache_enabled": rule.cache_enabled,
         "cache_ttl": rule.cache_ttl,
         "cache_min_uses": rule.cache_min_uses,
@@ -345,8 +351,12 @@ def render_servers(*, rules_by_domain: dict[int, list[dict]], domains: dict[int,
             domain.ssl_enabled and domain.ssl_cert_path and domain.ssl_key_path
         )
 
-        # A domain with no routes still deploys, so its ACME challenge stays
-        # answerable and a certificate can be issued before any routing exists.
+        # Challenges fall through to whichever backend serves the widest
+        # path, which is the one a router like Traefik sits behind. Without a
+        # route there is nowhere to fall through to, so passthrough is simply
+        # inactive until one exists.
+        fallback = rules[-1] if rules else None
+
         domain_contexts.append({
             "name": domain.name,
             "slug": domain.slug,
@@ -358,6 +368,15 @@ def render_servers(*, rules_by_domain: dict[int, list[dict]], domains: dict[int,
                 certificate.get_issuer_display() if certificate else "manual configuration"
             ),
             "force_ssl_redirect": domain.force_ssl_redirect,
+            "acme_challenge_passthrough": bool(
+                domain.acme_challenge_passthrough and fallback
+            ),
+            "acme_upstream": fallback["upstream_name"] if fallback else "",
+            # The same scheme the backend's own traffic uses. Hardcoding http
+            # here would send a plaintext request to a backend listening on
+            # 443, which fails at the TLS handshake rather than at anything
+            # resembling the actual problem.
+            "acme_scheme": fallback["scheme"] if fallback else "http",
             "rules": rules,
             "has_root_rule": any(
                 r["match_value"] == "/" and r["match_type"] == RoutingRule.MatchType.PATH_PREFIX

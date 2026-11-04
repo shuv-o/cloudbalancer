@@ -54,9 +54,12 @@ Leave `ACME_STAGING=true` for now. Then:
 make init
 ```
 
-That builds the images (including Nginx with the traffic-status module
-compiled in — the first build takes a few minutes), starts everything, applies
-migrations, and creates the admin account.
+It refuses to start while any `CHANGE_ME` value is still in `.env`, then
+builds the images — including Nginx with the traffic-status module compiled
+in, which is the slow part — applies migrations, brings everything up, and
+waits for Django to report healthy before saying it is done.
+
+No image registry is involved, so this works before any CI is configured.
 
 Confirm it came up:
 

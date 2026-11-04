@@ -40,7 +40,7 @@ latency budget achievable at all.
 
 ```bash
 cp .env.example .env     # then edit it
-make init                # build, start, create the admin account
+make init                # check config, build, bring everything up
 ```
 
 For a real server — firewall, DNS, the first certificate, backups — and for

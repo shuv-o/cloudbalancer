@@ -45,15 +45,28 @@ logs-celery: ## Tail the worker's logs, where deploys and ACME show up
 # Setup
 # ---------------------------------------------------------------------------
 
-init: ## First run: build, start, and create the admin account
-	@test -f .env || (cp .env.example .env && echo "Created .env from the example. Edit it before going to production.")
-	$(MAKE) build
-	$(MAKE) up
-	@echo "Waiting for the database..."
-	@sleep 8
-	docker compose exec django python manage.py bootstrap
+init: ## First run on a new server: check config, build, bring everything up
+	@if [ ! -f .env ]; then \
+		cp .env.example .env && chmod 600 .env; \
+		echo "Created .env from the example."; \
+		echo "Edit it -- every value marked CHANGE_ME -- then run 'make init' again."; \
+		exit 1; \
+	fi
+	@if grep -q CHANGE_ME .env; then \
+		echo "These still hold the example value and must be set before deploying:"; \
+		grep -n CHANGE_ME .env | sed 's/^/  /'; \
+		exit 1; \
+	fi
+	@# deploy.sh rather than build + up: it waits for Django to report healthy
+	@# before declaring success. The first boot applies every migration and
+	@# collects static files before gunicorn binds, so anything that assumes a
+	@# fixed delay races with it.
+	./deploy/deploy.sh local --build
 	@echo
-	@echo "Open http://localhost:8081"
+	@echo "Up. The admin account came from ADMIN_USERNAME / ADMIN_PASSWORD in .env."
+	@echo "Reach the panel from your own machine with:"
+	@echo "  ssh -L 8081:localhost:8081 $$(whoami)@$$(hostname -I 2>/dev/null | awk '{print $$1}')"
+	@echo "then open http://localhost:8081"
 
 migrate: ## Apply database migrations
 	docker compose exec django python manage.py migrate

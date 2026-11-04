@@ -138,6 +138,40 @@ jobs:
           python deploy/ci_fixture.py "$NGINX_CONF_DIR"
           cp gateway/nginx/conf.d/default.conf "$NGINX_CONF_DIR/"
 
+      - name: Every file the config references exists
+        run: |
+          # Nginx reports a missing certificate as a failure to open a path,
+          # without saying that the path was never the one you configured.
+          # Checking here names the file and the directive instead.
+          python - "${{ runner.temp }}/conf.d" <<'PY'
+          import re, sys
+          from pathlib import Path
+
+          conf_dir = Path(sys.argv[1])
+          directives = ("ssl_certificate", "ssl_certificate_key",
+                        "ssl_client_certificate", "ssl_trusted_certificate")
+          missing = []
+          checked = 0
+          for conf in sorted(conf_dir.glob("*.conf")):
+              for line in conf.read_text().splitlines():
+                  s = line.strip()
+                  if s.startswith("#"):
+                      continue
+                  m = re.match(rf"({'|'.join(directives)})\s+(\S+);", s)
+                  if not m:
+                      continue
+                  checked += 1
+                  if not Path(m.group(2)).is_file():
+                      missing.append(f"{conf.name}: {m.group(1)} -> {m.group(2)}")
+
+          if missing:
+              print("::error::Config references files that do not exist:")
+              for entry in missing:
+                  print(f"  {entry}")
+              sys.exit(1)
+          print(f"All {checked} referenced certificate files exist.")
+          PY
+
       - name: nginx -t
         run: |
           # --add-host: nginx resolves upstream hostnames when it loads a

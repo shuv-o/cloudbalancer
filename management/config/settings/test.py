@@ -39,13 +39,25 @@ CELERY_BEAT_SCHEDULE = {}
 
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 
-NGINX_CONF_DIR = os.environ.get("NGINX_CONF_DIR", str(_TMP / "conf.d"))
-NGINX_SSL_DIR = str(_TMP / "ssl")
-NGINX_CACHE_DIR = str(_TMP / "cache")
-LETSENCRYPT_DIR = str(_TMP / "letsencrypt")
-CERTBOT_WORK_DIR = str(_TMP / "letsencrypt-work")
-CERTBOT_LOG_DIR = str(_TMP / "letsencrypt-log")
-ACME_WEBROOT_DIR = str(_TMP / "acme")
+def _path(name: str, default: str) -> str:
+    """
+    A writable path for tests, overridable from the environment.
+
+    Every one of these goes through here deliberately. When only some of them
+    honoured an override, a caller that set NGINX_SSL_DIR got its certificates
+    written somewhere else entirely -- and the only symptom was Nginx failing
+    to open a file at a path nothing had told it to use.
+    """
+    return os.environ.get(name, str(_TMP / default))
+
+
+NGINX_CONF_DIR = _path("NGINX_CONF_DIR", "conf.d")
+NGINX_SSL_DIR = _path("NGINX_SSL_DIR", "ssl")
+NGINX_CACHE_DIR = _path("NGINX_CACHE_DIR", "cache")
+LETSENCRYPT_DIR = _path("LETSENCRYPT_DIR", "letsencrypt")
+CERTBOT_WORK_DIR = _path("CERTBOT_WORK_DIR", "letsencrypt-work")
+CERTBOT_LOG_DIR = _path("CERTBOT_LOG_DIR", "letsencrypt-log")
+ACME_WEBROOT_DIR = _path("ACME_WEBROOT_DIR", "acme")
 
 for _path in (
     NGINX_CONF_DIR, NGINX_SSL_DIR, NGINX_CACHE_DIR,

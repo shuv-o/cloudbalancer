@@ -18,10 +18,15 @@ def backend_create(
     description: str = "",
     lb_method: str = Backend.LBMethod.ROUND_ROBIN,
     keepalive_connections: int = 32,
+    keepalive_requests: int = 1000,
+    keepalive_timeout: int = 60,
     health_check_enabled: bool = True,
     health_check_path: str = "/health",
     health_check_interval: int = 10,
     health_check_timeout: int = 5,
+    drain_unhealthy: bool = False,
+    unhealthy_threshold: int = 3,
+    healthy_threshold: int = 2,
     is_active: bool = True,
 ) -> Backend:
     """Create a new backend service."""
@@ -30,10 +35,15 @@ def backend_create(
         description=description,
         lb_method=lb_method,
         keepalive_connections=keepalive_connections,
+        keepalive_requests=keepalive_requests,
+        keepalive_timeout=keepalive_timeout,
         health_check_enabled=health_check_enabled,
         health_check_path=health_check_path,
         health_check_interval=health_check_interval,
         health_check_timeout=health_check_timeout,
+        drain_unhealthy=drain_unhealthy,
+        unhealthy_threshold=unhealthy_threshold,
+        healthy_threshold=healthy_threshold,
         is_active=is_active,
     )
     backend.full_clean()

@@ -30,7 +30,11 @@ class BackendInstanceOutputSerializer(serializers.ModelSerializer):
 
 class BackendInputSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=100)
-    description = serializers.CharField(required=False, default="")
+    # The form sends "" for an empty optional field, so rejecting blank
+    # turns "I left the notes empty" into a 400.
+    description = serializers.CharField(
+        required=False, allow_blank=True, default=""
+    )
     lb_method = serializers.ChoiceField(
         choices=Backend.LBMethod.choices,
         default=Backend.LBMethod.ROUND_ROBIN,
@@ -42,7 +46,15 @@ class BackendInputSerializer(serializers.Serializer):
     unhealthy_threshold = serializers.IntegerField(default=3, min_value=1)
     healthy_threshold = serializers.IntegerField(default=2, min_value=1)
     health_check_enabled = serializers.BooleanField(required=False, default=True)
-    health_check_path = serializers.CharField(required=False, default="/health")
+    # Blank is not a usable path, but clearing the field should fall back to
+    # the default rather than fail -- health checking is optional, and the
+    # field is only visible when it is switched on.
+    health_check_path = serializers.CharField(
+        required=False, allow_blank=True, default="/health"
+    )
+
+    def validate_health_check_path(self, value: str) -> str:
+        return value.strip() or "/health"
     health_check_interval = serializers.IntegerField(default=10, min_value=1)
     health_check_timeout = serializers.IntegerField(default=5, min_value=1)
     is_active = serializers.BooleanField(required=False, default=True)

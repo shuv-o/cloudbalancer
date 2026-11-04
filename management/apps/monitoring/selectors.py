@@ -17,7 +17,8 @@ from datetime import timedelta
 
 import httpx
 from django.conf import settings
-from django.db.models import Avg
+from django.core.cache import cache
+from django.db.models import Avg, Count, Q
 from django.utils import timezone
 
 from apps.backends.models import Backend, BackendInstance
@@ -36,15 +37,36 @@ CACHE_STATUSES = (
 # Live counters from Nginx
 # ---------------------------------------------------------------------------
 
+_VTS_CACHE_KEY = "monitoring:vts_raw"
+
+
 def vts_raw() -> dict | None:
-    """Fetch Nginx's traffic-status JSON, or None if it is unreachable."""
+    """
+    Nginx's traffic-status JSON, or None if it is unreachable.
+
+    Cached for a couple of seconds. The overview endpoint derives traffic,
+    cache and upstream figures from this one document, and without a cache it
+    fetched the same thing three times per request -- three round trips, three
+    timeouts. When Nginx was unreachable that was six seconds of a worker held
+    open, on an endpoint the dashboard polls every five.
+
+    The failure is cached too, deliberately: a gateway that cannot answer will
+    not answer any faster for being asked three times in a row.
+    """
+    cached = cache.get(_VTS_CACHE_KEY)
+    if cached is not None:
+        return cached.get("payload")
+
     try:
         response = httpx.get(settings.NGINX_VTS_URL, timeout=settings.NGINX_VTS_TIMEOUT)
         response.raise_for_status()
-        return response.json()
+        payload = response.json()
     except Exception as exc:
         logger.warning("Traffic status unavailable at %s: %s", settings.NGINX_VTS_URL, exc)
-        return None
+        payload = None
+
+    cache.set(_VTS_CACHE_KEY, {"payload": payload}, timeout=settings.NGINX_VTS_CACHE_SECONDS)
+    return payload
 
 
 def _ratio(hits: int, total: int) -> float | None:
@@ -331,42 +353,66 @@ def traffic_series(*, minutes: int = 60, step: str = "30s") -> dict:
 # ---------------------------------------------------------------------------
 
 def dashboard_summary() -> dict:
-    """Everything the dashboard header needs, in one query set."""
+    """
+    Everything the dashboard header needs.
+
+    One aggregate per table rather than one per number. The page polls this
+    every few seconds, and a dozen separate COUNT round trips to answer
+    questions about the same four tables is a dozen more than it needs.
+    """
     now = timezone.now()
     last_24h = now - timedelta(hours=24)
 
-    domains = Domain.objects.all()
-    backends = Backend.objects.filter(is_active=True)
-    instances = BackendInstance.objects.filter(is_active=True)
-    rules = RoutingRule.objects.all()
-    recent_deploys = ConfigDeployLog.objects.filter(created_at__gte=last_24h)
+    domains = Domain.objects.aggregate(
+        total=Count("id"),
+        active=Count("id", filter=Q(is_active=True)),
+        ssl_enabled=Count("id", filter=Q(ssl_enabled=True)),
+    )
+
+    backends = Backend.objects.aggregate(
+        total=Count("id", filter=Q(is_active=True)),
+    )
+
+    instances = BackendInstance.objects.filter(is_active=True).aggregate(
+        total=Count("id"),
+        healthy=Count("id", filter=Q(is_healthy=True)),
+        draining=Count("id", filter=Q(is_draining=True)),
+        avg_probe_ms=Avg("last_health_response_ms"),
+    )
+
+    rules = RoutingRule.objects.aggregate(
+        total=Count("id"),
+        active=Count("id", filter=Q(is_active=True)),
+        cached=Count("id", filter=Q(is_active=True, cache_enabled=True)),
+    )
+
+    deploys = ConfigDeployLog.objects.filter(created_at__gte=last_24h).aggregate(
+        total=Count("id"),
+        failed=Count("id", filter=Q(status=ConfigDeployLog.Status.FAILED)),
+    )
 
     return {
         "domains": {
-            "total": domains.count(),
-            "active": domains.filter(is_active=True).count(),
-            "ssl_enabled": domains.filter(ssl_enabled=True).count(),
+            "total": domains["total"],
+            "active": domains["active"],
+            "ssl_enabled": domains["ssl_enabled"],
         },
         "backends": {
-            "total": backends.count(),
-            "instances_total": instances.count(),
-            "instances_healthy": instances.filter(is_healthy=True).count(),
-            "instances_draining": instances.filter(is_draining=True).count(),
-            "avg_probe_ms": instances.filter(
-                last_health_response_ms__isnull=False
-            ).aggregate(avg=Avg("last_health_response_ms"))["avg"],
+            "total": backends["total"],
+            "instances_total": instances["total"],
+            "instances_healthy": instances["healthy"],
+            "instances_draining": instances["draining"],
+            "avg_probe_ms": instances["avg_probe_ms"],
         },
         "routing": {
-            "total_rules": rules.count(),
-            "active_rules": rules.filter(is_active=True).count(),
-            "cached_rules": rules.filter(is_active=True, cache_enabled=True).count(),
+            "total_rules": rules["total"],
+            "active_rules": rules["active"],
+            "cached_rules": rules["cached"],
         },
         "certificates": certificate_expiry_summary(),
         "deploys": {
-            "last_24h_total": recent_deploys.count(),
-            "last_24h_failed": recent_deploys.filter(
-                status=ConfigDeployLog.Status.FAILED
-            ).count(),
+            "last_24h_total": deploys["total"],
+            "last_24h_failed": deploys["failed"],
             "last_deploy": ConfigDeployLog.objects.values(
                 "id", "status", "created_at", "completed_at"
             ).first(),

@@ -834,3 +834,100 @@ class AllowedHostsTests(TestCase):
         hosts = self._resolve("127.0.0.1,localhost")
         self.assertEqual(hosts.count("127.0.0.1"), 1)
         self.assertEqual(hosts.count("localhost"), 1)
+
+
+class RetentionTests(TestCase):
+    """Both security tables are append-only, so something has to trim them."""
+
+    def test_old_records_are_pruned_and_recent_ones_kept(self):
+        from apps.security.models import AuditEvent, LoginAttempt
+        from apps.security.tasks import async_prune_history
+
+        for model in (LoginAttempt, AuditEvent):
+            old = model.objects.create(
+                **({"username": "x", "outcome": "success"} if model is LoginAttempt
+                   else {"action": "POST", "path": "/x/", "status_code": 200})
+            )
+            recent = model.objects.create(
+                **({"username": "y", "outcome": "success"} if model is LoginAttempt
+                   else {"action": "POST", "path": "/y/", "status_code": 200})
+            )
+            model.objects.filter(pk=old.pk).update(
+                created_at=timezone.now() - timedelta(days=400)
+            )
+
+        async_prune_history()
+
+        self.assertEqual(LoginAttempt.objects.count(), 1)
+        self.assertEqual(AuditEvent.objects.count(), 1)
+
+    def test_pruning_an_empty_table_is_harmless(self):
+        from apps.security.tasks import async_prune_history
+
+        self.assertEqual(
+            async_prune_history(),
+            {"sign-in attempts": 0, "audit events": 0, "expired locks": 0},
+        )
+
+
+class PolicyCachingTests(TestCase):
+    """
+    The access policy is read by three middlewares on every request and
+    changes about monthly, so it is cached. What matters is that a change
+    still takes effect immediately rather than when a timeout expires.
+    """
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+
+    def _locmem(self):
+        from django.conf import settings
+        from django.test import override_settings
+
+        return override_settings(CACHES=settings.LOCMEM_CACHE)
+
+    def test_a_write_takes_effect_on_the_next_read(self):
+        with self._locmem():
+            from django.core.cache import cache
+
+            cache.clear()
+            policy = PanelAccessPolicy.load()
+            original = policy.require_totp
+
+            policy.require_totp = not original
+            policy.save()
+
+            self.assertEqual(PanelAccessPolicy.load().require_totp, not original)
+
+    def test_repeated_reads_do_not_hit_the_database(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with self._locmem():
+            from django.core.cache import cache
+
+            cache.clear()
+            PanelAccessPolicy.load()  # warm
+
+            with CaptureQueriesContext(connection) as ctx:
+                for _ in range(5):
+                    PanelAccessPolicy.load()
+
+            self.assertEqual(len(ctx), 0, "a cached policy still queried the database")
+
+    def test_the_traffic_policy_behaves_the_same_way(self):
+        from apps.security.models import TrafficProtectionPolicy
+
+        with self._locmem():
+            from django.core.cache import cache
+
+            cache.clear()
+            policy = TrafficProtectionPolicy.load()
+            policy.per_ip_requests_per_second = 123
+            policy.save()
+
+            self.assertEqual(
+                TrafficProtectionPolicy.load().per_ip_requests_per_second, 123
+            )

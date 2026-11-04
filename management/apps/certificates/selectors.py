@@ -1,7 +1,7 @@
 """Certificate selectors — read operations."""
 from datetime import timedelta
 
-from django.db.models import Q, QuerySet
+from django.db.models import Count, Q, QuerySet
 from django.utils import timezone
 
 from apps.certificates.models import AcmeAccount, Certificate
@@ -44,23 +44,33 @@ def certificate_list_due_for_renewal() -> QuerySet[Certificate]:
 
 
 def certificate_expiry_summary() -> dict:
-    """Counts the SSL page and the dashboard header both need."""
+    """
+    Counts the SSL page and the dashboard header both need.
+
+    One aggregate rather than eight counts, for the same reason as the
+    dashboard summary: this is on a polled endpoint.
+    """
     now = timezone.now()
-    qs = Certificate.objects.all()
+    soon = now + timedelta(days=14)
+
+    totals = Certificate.objects.aggregate(
+        total=Count("id"),
+        active=Count("id", filter=Q(status=Certificate.Status.ACTIVE)),
+        failed=Count("id", filter=Q(status=Certificate.Status.FAILED)),
+        pending=Count("id", filter=Q(status=Certificate.Status.PENDING)),
+        expiring_within_14d=Count(
+            "id", filter=Q(not_after__gt=now, not_after__lte=soon)
+        ),
+        expired=Count("id", filter=Q(not_after__lte=now)),
+        auto_renewing=Count(
+            "id", filter=Q(auto_renew=True, issuer=Certificate.Issuer.ACME)
+        ),
+    )
+
     return {
-        "total": qs.count(),
-        "active": qs.filter(status=Certificate.Status.ACTIVE).count(),
-        "failed": qs.filter(status=Certificate.Status.FAILED).count(),
-        "pending": qs.filter(status=Certificate.Status.PENDING).count(),
-        "expiring_within_14d": qs.filter(
-            not_after__gt=now, not_after__lte=now + timedelta(days=14)
-        ).count(),
-        "expired": qs.filter(not_after__lte=now).count(),
-        "auto_renewing": qs.filter(
-            auto_renew=True, issuer=Certificate.Issuer.ACME
-        ).count(),
+        **totals,
         "next_expiry": (
-            qs.filter(not_after__gt=now)
+            Certificate.objects.filter(not_after__gt=now)
             .order_by("not_after")
             .values("domain__name", "not_after")
             .first()

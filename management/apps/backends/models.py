@@ -103,6 +103,9 @@ class Backend(models.Model):
         """Nginx-safe upstream block name."""
         return self.name.replace("-", "_").replace(".", "_")
 
+    # These three are for a single backend, where one query each is fine.
+    # List endpoints must not use them: see backend_list_with_stats, which
+    # annotates the same names so the serializer never reaches the property.
     @property
     def healthy_instance_count(self) -> int:
         return self.instances.filter(is_healthy=True, is_active=True).count()

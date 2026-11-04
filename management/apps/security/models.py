@@ -18,6 +18,7 @@ is that defeating one still leaves four.
 import ipaddress
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import models
 from django.utils import timezone
 
@@ -124,15 +125,30 @@ class PanelAccessPolicy(models.Model):
             return "Panel on loopback only"
         return f"Panel published at {self.panel_domain}"
 
+    _CACHE_KEY = "security:panel_access_policy"
+
     @classmethod
     def load(cls) -> "PanelAccessPolicy":
-        """The policy row, created with safe defaults if it does not exist."""
+        """
+        The policy row, created with safe defaults if it does not exist.
+
+        Cached, because three middlewares read it on the way through every
+        request and it changes about as often as someone edits the Security
+        page. Writes drop the entry, so a change takes effect on the next
+        request rather than when a timeout expires.
+        """
+        cached = cache.get(cls._CACHE_KEY)
+        if cached is not None:
+            return cached
+
         policy, _ = cls.objects.get_or_create(pk=1)
+        cache.set(cls._CACHE_KEY, policy, timeout=300)
         return policy
 
     def save(self, *args, **kwargs):
         self.pk = 1
         super().save(*args, **kwargs)
+        cache.delete(self._CACHE_KEY)
 
     @property
     def normalised_allowlist(self) -> list[str]:
@@ -401,14 +417,23 @@ class TrafficProtectionPolicy(models.Model):
             f"{self.per_ip_connections} connections per address"
         )
 
+    _CACHE_KEY = "security:traffic_protection_policy"
+
     @classmethod
     def load(cls) -> "TrafficProtectionPolicy":
+        """Cached for the same reason as the access policy, and invalidated the same way."""
+        cached = cache.get(cls._CACHE_KEY)
+        if cached is not None:
+            return cached
+
         policy, _ = cls.objects.get_or_create(pk=1)
+        cache.set(cls._CACHE_KEY, policy, timeout=300)
         return policy
 
     def save(self, *args, **kwargs):
         self.pk = 1
         super().save(*args, **kwargs)
+        cache.delete(self._CACHE_KEY)
 
 
 class BlockedAddress(models.Model):

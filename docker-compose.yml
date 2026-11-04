@@ -19,7 +19,16 @@
 # depend on what the checkout happens to be called.
 name: cloudbalancer
 
+# The json-file driver keeps everything forever unless told otherwise. On a
+# box whose job is to stay up, a log file is not worth an outage.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 x-management: &management
+  logging: *logging
   image: ${REGISTRY:-ghcr.io/shuv-o}/cloudbalancer-management:${IMAGE_TAG:-local}
   build:
     context: ./management
@@ -50,6 +59,12 @@ services:
       args:
         NGINX_VERSION: ${NGINX_VERSION:-1.27.4}
     container_name: cloudbalancer-nginx
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "2.0"
     ports:
       - "80:80"
       - "443:443"
@@ -109,6 +124,11 @@ services:
   django:
     <<: *management
     container_name: cloudbalancer-django
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "2.0"
     # A script, not an inline chain. See management/docker-entrypoint.sh for
     # why: a multi-line command here silently became several commands.
     command: ["./docker-entrypoint.sh"]
@@ -136,6 +156,11 @@ services:
   celery:
     <<: *management
     container_name: cloudbalancer-celery
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+          cpus: "1.0"
     command: celery -A config worker -l info -c 4
     depends_on:
       django: {condition: service_started}
@@ -144,6 +169,11 @@ services:
   celery-beat:
     <<: *management
     container_name: cloudbalancer-celery-beat
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.25"
     command: >
       celery -A config beat -l info
         --scheduler django_celery_beat.schedulers:DatabaseScheduler
@@ -160,6 +190,12 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: cloudbalancer-panel-build
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "2.0"
     volumes:
       - panel_dist:/out
     command: sh -c "rm -rf /out/* && cp -r /app/dist/. /out/ && echo 'Control panel built.'"
@@ -171,6 +207,12 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: cloudbalancer-postgres
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     environment:
@@ -188,7 +230,15 @@ services:
   redis:
     image: redis:7-alpine
     container_name: cloudbalancer-redis
-    command: redis-server --save 60 1 --appendonly no
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: 384m
+          cpus: "0.5"
+    command: >-
+      redis-server --save 60 1 --appendonly no
+      --maxmemory 320mb --maxmemory-policy volatile-lru
     volumes:
       - redis_data:/data
     healthcheck:
@@ -209,6 +259,12 @@ services:
   prometheus:
     image: prom/prometheus:v3.1.0
     container_name: cloudbalancer-prometheus
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -226,6 +282,12 @@ services:
   grafana:
     image: grafana/grafana:11.5.1
     container_name: cloudbalancer-grafana
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.5"
     volumes:
       - grafana_data:/var/lib/grafana
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro

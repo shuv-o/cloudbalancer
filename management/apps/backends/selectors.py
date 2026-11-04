@@ -15,16 +15,43 @@ def backend_list(*, is_active: bool | None = None) -> QuerySet[Backend]:
 
 
 def backend_get(*, backend_id: int) -> Backend:
-    """Get a single backend by ID."""
-    return Backend.objects.get(pk=backend_id)
+    """One backend, with its instances, in two queries rather than one per instance."""
+    return Backend.objects.prefetch_related("instances").get(pk=backend_id)
 
 
 def backend_list_with_stats() -> QuerySet[Backend]:
-    """List backends annotated with instance counts and health stats."""
-    return Backend.objects.annotate(
-        instance_count=Count("instances"),
-        healthy_count=Count("instances", filter=Q(instances__is_healthy=True, instances__is_active=True)),
-        avg_response_ms=Avg("instances__last_health_response_ms", filter=Q(instances__is_active=True)),
+    """
+    Backends with their instances and counts, in two queries.
+
+    The counts are annotated and the instances prefetched, so the serializer
+    never reaches the model properties. Previously the annotations were named
+    differently from what the serializer read, so they were computed,
+    discarded, and then recalculated one COUNT at a time per backend -- five
+    queries each, on a page that lists all of them.
+
+    The names deliberately differ from the properties: Django cannot assign an
+    annotation over a read-only attribute, so a collision fails at query time.
+    """
+    return (
+        Backend.objects
+        .prefetch_related("instances")
+        .annotate(
+            total_count=Count("instances", distinct=True),
+            healthy_count=Count(
+                "instances",
+                filter=Q(instances__is_healthy=True, instances__is_active=True),
+                distinct=True,
+            ),
+            serving_count=Count(
+                "instances",
+                filter=Q(instances__is_active=True, instances__is_draining=False),
+                distinct=True,
+            ),
+            avg_response_ms=Avg(
+                "instances__last_health_response_ms",
+                filter=Q(instances__is_active=True),
+            ),
+        )
     )
 
 

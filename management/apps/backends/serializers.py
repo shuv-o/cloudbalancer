@@ -50,10 +50,31 @@ class BackendInputSerializer(serializers.Serializer):
 
 class BackendOutputSerializer(serializers.ModelSerializer):
     instances = BackendInstanceOutputSerializer(many=True, read_only=True)
-    healthy_instance_count = serializers.IntegerField(read_only=True)
-    total_instance_count = serializers.IntegerField(read_only=True)
-    serving_instance_count = serializers.IntegerField(read_only=True)
+    healthy_instance_count = serializers.SerializerMethodField()
+    total_instance_count = serializers.SerializerMethodField()
+    serving_instance_count = serializers.SerializerMethodField()
     lb_method_label = serializers.CharField(source="get_lb_method_display", read_only=True)
+
+    @staticmethod
+    def _count(obj, annotated: str, prop: str) -> int:
+        """
+        Prefer the annotation the list query provides; fall back to the model
+        property for a single object, where one extra query costs nothing.
+
+        Checked against None rather than truthiness, or a genuine count of
+        zero would silently fall through to the property.
+        """
+        value = getattr(obj, annotated, None)
+        return value if value is not None else getattr(obj, prop)
+
+    def get_healthy_instance_count(self, obj) -> int:
+        return self._count(obj, "healthy_count", "healthy_instance_count")
+
+    def get_total_instance_count(self, obj) -> int:
+        return self._count(obj, "total_count", "total_instance_count")
+
+    def get_serving_instance_count(self, obj) -> int:
+        return self._count(obj, "serving_count", "serving_instance_count")
 
     class Meta:
         model = Backend

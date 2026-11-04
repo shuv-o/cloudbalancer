@@ -34,7 +34,18 @@ DATABASES = {
     }
 }
 
+# No caching during tests.
+#
+# Django rebuilds the database between tests but nothing resets the cache, so
+# a cached singleton outlives the rows it was read from and leaks into the
+# next test with entirely different data. Caching is a production concern; the
+# tests that exercise it turn it on for themselves with override_settings.
 CACHES = {
+    "default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}
+}
+
+# A real cache, for the handful of tests that are about caching.
+LOCMEM_CACHE = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
         "LOCATION": "cloudbalancer-test",

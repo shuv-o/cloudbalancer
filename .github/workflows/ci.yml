@@ -70,6 +70,14 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      - name: Audit shipped dependencies
+        working-directory: frontend
+        run: |
+          # Production dependencies only. A vulnerable build tool is worth
+          # knowing about; a vulnerable package in the bundle an operator
+          # loads is worth failing over.
+          npm audit --omit=dev --audit-level=moderate
+
       - name: Typecheck and build
         working-directory: frontend
         run: npm run build

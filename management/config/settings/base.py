@@ -13,10 +13,39 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 # =============================================================================
 # Core
 # =============================================================================
-SECRET_KEY = os.environ.get(
-    "DJANGO_SECRET_KEY", "insecure-dev-key-change-in-production-!!"
-)
 DEBUG = os.environ.get("DJANGO_DEBUG", "True").lower() in ("true", "1", "yes")
+
+# Session cookies, CSRF tokens and the hashes protecting two-factor recovery
+# codes are all derived from this. A known value means all three can be
+# forged, which is full access to the gateway without a password.
+#
+# It used to fall back to a fixed string. That is fine in development and
+# catastrophic in production, and the failure is silent -- everything works,
+# and the key protecting it is in a public repository. Refusing to start is
+# the only safe response.
+_PLACEHOLDER_KEYS = {
+    "",
+    "CHANGE_ME",
+    "insecure-dev-key-change-in-production-!!",
+    "insecure-dev-key-change-in-production",
+}
+
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "").strip()
+
+if SECRET_KEY in _PLACEHOLDER_KEYS or len(SECRET_KEY) < 32:
+    if DEBUG:
+        SECRET_KEY = "insecure-development-key-never-use-outside-debug"
+    else:
+        from django.core.exceptions import ImproperlyConfigured
+
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY is unset, a placeholder, or shorter than 32 "
+            "characters, and DJANGO_DEBUG is off. Sessions, CSRF tokens and "
+            "two-factor recovery codes all derive from it, so a predictable "
+            "value is equivalent to no authentication at all.\n\n"
+            "Generate one with:\n"
+            "  python -c \"import secrets; print(secrets.token_urlsafe(50))\""
+        )
 def _allowed_hosts() -> list[str]:
     """
     The hostnames Django will answer for, plus the container's own loopback.
@@ -142,7 +171,10 @@ DATABASES = {
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": os.environ.get("REDIS_URL", "redis://redis:6379/0"),
+        # Database 1. The broker owns database 0, and sharing one would let
+        # cache growth evict queued tasks -- a deploy or a certificate renewal
+        # disappearing because a dashboard was left open.
+        "LOCATION": os.environ.get("REDIS_CACHE_URL", "redis://redis:6379/1"),
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         },
@@ -178,7 +210,17 @@ CELERY_BEAT_SCHEDULE = {
         "task": "certificates.sync_metadata",
         "schedule": crontab(hour="*/6", minute="5"),
     },
+    "prune-security-history": {
+        "task": "security.prune_history",
+        "schedule": crontab(hour="4", minute="23"),
+    },
 }
+
+# How long the security tables keep their rows. Sign-in attempts answer "is
+# someone trying right now"; the audit trail answers "who changed this", which
+# is asked about far older things.
+LOGIN_ATTEMPT_RETENTION_DAYS = int(os.environ.get("LOGIN_ATTEMPT_RETENTION_DAYS", 30))
+AUDIT_RETENTION_DAYS = int(os.environ.get("AUDIT_RETENTION_DAYS", 365))
 
 # =============================================================================
 # Django REST Framework
@@ -323,6 +365,9 @@ GATEWAY_DEPLOY_DEBOUNCE_SECONDS = int(os.environ.get("GATEWAY_DEPLOY_DEBOUNCE", 
 # =============================================================================
 NGINX_VTS_URL = os.environ.get("NGINX_VTS_URL", "http://nginx:8080/status/format/json")
 NGINX_VTS_TIMEOUT = float(os.environ.get("NGINX_VTS_TIMEOUT", 2.0))
+# Shorter than the dashboard's poll interval, so a refresh still shows
+# movement, but long enough that one page load is one fetch.
+NGINX_VTS_CACHE_SECONDS = float(os.environ.get("NGINX_VTS_CACHE_SECONDS", 2.0))
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
 PROMETHEUS_TIMEOUT = float(os.environ.get("PROMETHEUS_TIMEOUT", 5.0))
 GRAFANA_URL = os.environ.get("GRAFANA_URL", "http://localhost:3000")

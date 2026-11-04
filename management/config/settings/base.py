@@ -17,7 +17,37 @@ SECRET_KEY = os.environ.get(
     "DJANGO_SECRET_KEY", "insecure-dev-key-change-in-production-!!"
 )
 DEBUG = os.environ.get("DJANGO_DEBUG", "True").lower() in ("true", "1", "yes")
-ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "*").split(",")
+def _allowed_hosts() -> list[str]:
+    """
+    The hostnames Django will answer for, plus the container's own loopback.
+
+    ALLOWED_HOSTS exists to stop an attacker putting their own hostname in a
+    Host header and having it echoed back into a password-reset link or a
+    cache key. Loopback cannot be used that way: Nginx rewrites Host to the
+    name the client asked for, so a request presenting 127.0.0.1 can only have
+    come from inside this container.
+
+    It is appended unconditionally because the health check talks to
+    127.0.0.1:8000. Leaving it to be configured meant a deployment that set
+    DJANGO_ALLOWED_HOSTS to its own public address broke its own liveness
+    probe, and the only symptom was a DisallowedHost traceback every ten
+    seconds with no connection to the setting that caused it.
+    """
+    configured = [
+        host.strip()
+        for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "*").split(",")
+        if host.strip()
+    ]
+    if "*" in configured:
+        return configured
+
+    for loopback in ("127.0.0.1", "localhost", "[::1]"):
+        if loopback not in configured:
+            configured.append(loopback)
+    return configured
+
+
+ALLOWED_HOSTS = _allowed_hosts()
 ROOT_URLCONF = "config.urls"
 WSGI_APPLICATION = "config.wsgi.application"
 

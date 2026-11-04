@@ -783,3 +783,54 @@ class CookieSecurityTests(TestCase):
 
         with override_settings(PANEL_COOKIE_SECURE=True):
             self.assertNotIn("clear text", " ".join(policy.exposure_warnings))
+
+
+class AllowedHostsTests(TestCase):
+    """
+    Which Host headers Django answers for.
+
+    The health check talks to 127.0.0.1:8000, so loopback has to be allowed
+    whatever else is configured. When it was not, a deployment that set
+    DJANGO_ALLOWED_HOSTS to its own public address rejected its own liveness
+    probe -- and the only symptom was a DisallowedHost traceback every ten
+    seconds, naming a setting the operator had configured deliberately.
+    """
+
+    @staticmethod
+    def _resolve(value):
+        import importlib
+        import os
+
+        from config.settings import base
+
+        original = os.environ.get("DJANGO_ALLOWED_HOSTS")
+        os.environ["DJANGO_ALLOWED_HOSTS"] = value
+        try:
+            return base._allowed_hosts()
+        finally:
+            if original is None:
+                os.environ.pop("DJANGO_ALLOWED_HOSTS", None)
+            else:
+                os.environ["DJANGO_ALLOWED_HOSTS"] = original
+
+    def test_loopback_is_added_to_whatever_is_configured(self):
+        hosts = self._resolve("103.159.2.144")
+
+        self.assertIn("103.159.2.144", hosts)
+        self.assertIn("127.0.0.1", hosts)
+        self.assertIn("localhost", hosts)
+
+    def test_configured_hosts_are_preserved(self):
+        hosts = self._resolve("panel.example.com,10.0.0.5")
+
+        self.assertIn("panel.example.com", hosts)
+        self.assertIn("10.0.0.5", hosts)
+
+    def test_a_wildcard_is_left_alone(self):
+        """Appending to '*' would be noise; it already allows everything."""
+        self.assertEqual(self._resolve("*"), ["*"])
+
+    def test_loopback_is_not_duplicated(self):
+        hosts = self._resolve("127.0.0.1,localhost")
+        self.assertEqual(hosts.count("127.0.0.1"), 1)
+        self.assertEqual(hosts.count("localhost"), 1)

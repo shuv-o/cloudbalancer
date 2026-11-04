@@ -486,6 +486,26 @@ make bench-up
 RATE=5000 DURATION=60s make bench
 ```
 
+### `DisallowedHost: Invalid HTTP_HOST header`
+
+Django is answering, but not for the name in the request.
+
+```
+django.core.exceptions.DisallowedHost: Invalid HTTP_HOST header: '103.159.2.144:8081'
+```
+
+Add that hostname to `DJANGO_ALLOWED_HOSTS` in `.env` and restart Django. Nginx
+forwards the name the client asked for, so the list has to contain whatever
+people actually type — the IP, the hostname, or both:
+
+```ini
+DJANGO_ALLOWED_HOSTS=103.159.2.144,panel.example.com
+```
+
+Loopback is added automatically and does not need listing. If you see the error
+naming `127.0.0.1:8000` on a repeating ten-second cycle, that is the container's
+own health check on a build from before that was the case — pull and redeploy.
+
 ### The panel returns 502 or 503
 
 The panel is reachable and its API is not. The static bundle is served by Nginx

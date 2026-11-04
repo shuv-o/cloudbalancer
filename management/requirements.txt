@@ -11,6 +11,11 @@ redis>=5.0
 django-redis>=5.4
 celery>=5.4
 django-celery-beat>=2.7
+# kombu's Redis transport imports packaging but does not declare it, so a
+# clean install produces a Celery that cannot reach the broker. The failure
+# only appears when something first tries to queue a task -- which is any
+# write in the panel, surfacing as a 500 on an otherwise valid request.
+packaging>=24.0
 
 # Nginx config generation
 Jinja2>=3.1

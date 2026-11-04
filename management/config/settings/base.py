@@ -70,9 +70,21 @@ def _allowed_hosts() -> list[str]:
     if "*" in configured:
         return configured
 
-    for loopback in ("127.0.0.1", "localhost", "[::1]"):
-        if loopback not in configured:
-            configured.append(loopback)
+    # Loopback for the container's own health check, and the compose service
+    # name for anything calling across the internal network -- Prometheus
+    # scrapes http://django:8000/metrics, and Nginx is reachable the same way.
+    # Neither name resolves outside the Docker network, so neither can be
+    # spoofed by a client the way a public hostname can.
+    internal = ["127.0.0.1", "localhost", "[::1]"]
+    internal += [
+        name.strip()
+        for name in os.environ.get("DJANGO_INTERNAL_HOSTS", "django").split(",")
+        if name.strip()
+    ]
+
+    for host in internal:
+        if host not in configured:
+            configured.append(host)
     return configured
 
 

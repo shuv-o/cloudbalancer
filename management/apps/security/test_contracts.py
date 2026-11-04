@@ -148,3 +148,70 @@ class OptionalTextFieldTests(TestCase):
                     )
 
         self.assertEqual(failures, [], "\n  " + "\n  ".join(failures))
+
+
+class RuntimeDependencyTests(TestCase):
+    """
+    Imports that only happen in production.
+
+    Tests run Celery eagerly, so nothing ever loads the broker transport --
+    and kombu's Redis transport imports `packaging` without declaring it as a
+    dependency. A clean install therefore produced a Celery that could not
+    queue anything, and the first symptom was a 500 on the first write an
+    operator attempted.
+
+    Importing the module here costs nothing and closes that gap.
+    """
+
+    def test_the_broker_transport_imports(self):
+        """Every write in the panel queues a task, which needs this module."""
+        import kombu.transport.redis  # noqa: F401
+
+    def test_the_scheduler_imports(self):
+        import django_celery_beat.schedulers  # noqa: F401
+
+    def test_the_cache_backend_imports(self):
+        import django_redis.cache  # noqa: F401
+
+    def test_queueing_a_task_does_not_raise(self):
+        """
+        Exercises the path a write actually takes. Eager mode still builds the
+        message, so a transport that cannot be imported fails here.
+        """
+        from apps.gateway.tasks import request_config_deploy
+
+        request_config_deploy()
+
+
+class AllowedHostsCoverageTests(TestCase):
+    """
+    Every Host header something inside the stack actually sends.
+
+    These are not guesses: each one appeared in a production log as a
+    DisallowedHost traceback. The container health check presents
+    127.0.0.1:8000 and Prometheus presents django:8000, and neither is
+    configurable by whoever set DJANGO_ALLOWED_HOSTS to their public address.
+    """
+
+    def test_internal_callers_are_allowed(self):
+        import os
+
+        from config.settings import base
+
+        original = os.environ.get("DJANGO_ALLOWED_HOSTS")
+        os.environ["DJANGO_ALLOWED_HOSTS"] = "203.0.113.9"
+        try:
+            hosts = base._allowed_hosts()
+        finally:
+            if original is None:
+                os.environ.pop("DJANGO_ALLOWED_HOSTS", None)
+            else:
+                os.environ["DJANGO_ALLOWED_HOSTS"] = original
+
+        self.assertIn("203.0.113.9", hosts, "the configured host must survive")
+        for caller, why in (
+            ("127.0.0.1", "the container health check"),
+            ("localhost", "local tooling"),
+            ("django", "Prometheus scraping /metrics"),
+        ):
+            self.assertIn(caller, hosts, f"{caller} is used by {why}")

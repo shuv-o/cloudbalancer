@@ -37,6 +37,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Every runtime import resolves in a clean environment
+        run: |
+          # The test suite runs Celery eagerly and never loads the broker
+          # transport, so an undeclared transitive dependency passes every
+          # test and fails on the first write in production.
+          python - <<'PY'
+          import importlib, sys
+          modules = [
+              "kombu.transport.redis", "celery", "django_celery_beat",
+              "django_redis.cache", "psycopg2", "cryptography.x509",
+              "pyotp", "qrcode.image.svg", "httpx", "django_prometheus",
+              "corsheaders", "jinja2", "certbot",
+          ]
+          missing = []
+          for name in modules:
+              try:
+                  importlib.import_module(name)
+              except Exception as exc:
+                  missing.append(f"{name}: {type(exc).__name__}: {exc}")
+          if missing:
+              for entry in missing:
+                  print(f"::error::{entry}")
+              sys.exit(1)
+          print(f"All {len(modules)} runtime imports resolve.")
+          PY
+
       - name: Check for missing migrations
         working-directory: management
         env:

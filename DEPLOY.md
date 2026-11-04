@@ -1234,8 +1234,25 @@ cd /opt/cloudbalancer
 make update
 ```
 
-That is `git pull` followed by `deploy/deploy.sh local --build`: build, migrate,
-swap, verify, and roll back if the verification fails.
+`git pull`, then build, migrate, swap, verify, and roll back if the
+verification fails.
+
+The build is `--no-cache --pull`: every layer rebuilt, every base image
+re-fetched. Slower -- the traffic module compiles from source each time -- but
+it removes a whole class of "the fix is deployed and nothing changed", and it
+is the only way a Debian or Alpine security update actually reaches the
+gateway. A cached `FROM` line pins the base image indefinitely.
+
+When you know only Python or TypeScript changed, and the bind mount means that
+code is live without a rebuild at all:
+
+```bash
+make update-cached
+```
+
+Minutes faster. Reach for `make update` whenever dependencies, a Dockerfile or
+a base image is involved -- and when a deploy has behaved strangely and you
+want certainty over speed.
 
 ### Once CI is pushing images
 

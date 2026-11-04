@@ -90,7 +90,11 @@ seed: ## Load a demo topology pointing at the mock backends
 doctor: ## Report why the gateway is not working (paste the output when asking for help)
 	./deploy/doctor.sh
 
-update: ## Pull the latest code and roll it out, building here (run on the server)
+update: ## Pull the latest code and roll it out, rebuilding from scratch
+	git pull --ff-only origin main
+	./deploy/deploy.sh local --build --no-cache
+
+update-cached: ## Same, reusing cached layers -- minutes faster, for a code-only change
 	git pull --ff-only origin main
 	./deploy/deploy.sh local --build
 

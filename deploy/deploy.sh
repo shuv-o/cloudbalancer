@@ -21,16 +21,24 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/cloudbalancer}"
 TAG="${1:-}"
 BUILD_LOCALLY=false
+NO_CACHE=false
 STATE="${APP_DIR}/.deployed-tag"
 
-[[ "${2:-}" == "--build" ]] && BUILD_LOCALLY=true
+for arg in "${@:2}"; do
+    case "$arg" in
+        --build)    BUILD_LOCALLY=true ;;
+        --no-cache) NO_CACHE=true ;;
+        *)          echo "unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
 
 if [[ -z "$TAG" ]]; then
     cat >&2 <<'USAGE'
-usage: deploy.sh <image-tag> [--build]
+usage: deploy.sh <image-tag> [--build] [--no-cache]
 
-  deploy.sh sha-a1b2c3d      pull that release from the registry
-  deploy.sh local --build    build here from the current checkout
+  deploy.sh sha-a1b2c3d                 pull that release from the registry
+  deploy.sh local --build               build here, reusing cached layers
+  deploy.sh local --build --no-cache    build here from scratch
 USAGE
     exit 2
 fi
@@ -53,8 +61,20 @@ log "Deploying ${TAG}${previous:+ (currently ${previous})}"
 # while it runs, so the window where the gateway is mid-change stays short.
 # ---------------------------------------------------------------------------
 if [[ "$BUILD_LOCALLY" == true ]]; then
-    log "Building images here (this compiles the traffic module -- give it a few minutes)"
-    compose "$TAG" build nginx django panel
+    build_args=(--pull)
+    cache_note="reusing cached layers"
+
+    if [[ "$NO_CACHE" == true ]]; then
+        build_args+=(--no-cache)
+        cache_note="from scratch, no cache"
+    fi
+
+    # --pull on every build, cache or not. A cached FROM line pins the base
+    # image forever, so a Debian or Alpine security update never reaches the
+    # gateway no matter how often it is redeployed. That is a slower problem
+    # to notice than a stale layer and a worse one to have.
+    log "Building images here (${cache_note}; the traffic module compiles from source)"
+    compose "$TAG" build "${build_args[@]}" nginx django panel
 else
     log "Pulling images"
     if ! compose "$TAG" pull --quiet nginx django celery celery-beat panel; then

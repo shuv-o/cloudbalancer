@@ -17,6 +17,14 @@ DEBUG = False
 SECRET_KEY = "test-only-key"
 ALLOWED_HOSTS = ["*"]
 
+# base.py derives these from DEBUG as it is imported, which here is before the
+# line above has run. Setting them explicitly means the suite exercises the
+# same cookie posture production uses, rather than a weaker one that would let
+# a regression through.
+PANEL_COOKIE_SECURE = True
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
+
 # In-memory by default. Point SQLITE_PATH at a file to keep data between
 # runs, which is what `make dev` does so the panel has something to show.
 DATABASES = {

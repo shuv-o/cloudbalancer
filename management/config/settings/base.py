@@ -199,8 +199,25 @@ CSRF_COOKIE_SAMESITE = "Strict"
 CSRF_USE_SESSIONS = False
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Strict"
-SESSION_COOKIE_SECURE = not DEBUG
-CSRF_COOKIE_SECURE = not DEBUG
+
+# Whether the session and CSRF cookies are marked Secure, meaning the browser
+# will only ever send them back over HTTPS.
+#
+# On by default, and it should stay on. Turn it off only to reach the panel
+# over plain HTTP on a port -- `http://10.0.0.5:8081` -- on a network you
+# control. Browsers make an exception for `localhost`, so an SSH tunnel does
+# not need this; an IP address does.
+#
+# The cost is real: with this off, the password, the authenticator code and the
+# session cookie all cross the network in clear text, and anyone positioned to
+# read them controls every domain this gateway serves. It is a reasonable trade
+# on a private LAN or over a VPN, and not one anywhere else.
+PANEL_COOKIE_SECURE = os.environ.get(
+    "PANEL_COOKIE_SECURE", "false" if DEBUG else "true"
+).lower() in ("true", "1", "yes")
+
+SESSION_COOKIE_SECURE = PANEL_COOKIE_SECURE
+CSRF_COOKIE_SECURE = PANEL_COOKIE_SECURE
 SESSION_COOKIE_NAME = "gateway_session"
 SESSION_COOKIE_AGE = 12 * 3600
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True

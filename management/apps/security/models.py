@@ -17,6 +17,7 @@ is that defeating one still leaves four.
 """
 import ipaddress
 
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -170,6 +171,13 @@ class PanelAccessPolicy(models.Model):
             warnings.append(
                 "The Django admin is reachable publicly. It is a far larger surface "
                 "than the panel's own API and grants the same powers."
+            )
+        if not settings.PANEL_COOKIE_SECURE:
+            warnings.append(
+                "Session cookies are not marked Secure, so the panel can be used over "
+                "plain HTTP. Passwords, authenticator codes and the session cookie "
+                "itself cross the network in clear text. Reasonable on a private "
+                "network, not on a public one."
             )
         if self.lockout_threshold == 0:
             warnings.append("Accounts are never locked, so passwords can be guessed indefinitely.")

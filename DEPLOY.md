@@ -86,6 +86,61 @@ it is supported, and it is more involved than changing a bind address.
 > that `ufw deny` does not cover. Binding to a specific address in the compose
 > file is the control that actually works here; a host firewall alone is not.
 
+## Reaching the panel on a port instead
+
+The tunnel is the default because it needs no configuration and exposes
+nothing. To open the panel on a network address instead, three settings have
+to agree, and a fourth decides whether it works at all over plain HTTP.
+
+In `/opt/cloudbalancer/.env`:
+
+```ini
+PANEL_BIND=10.0.0.5                           # the interface to publish on
+DJANGO_ALLOWED_HOSTS=10.0.0.5,localhost       # or Django answers 400
+CSRF_TRUSTED_ORIGINS=http://10.0.0.5:8081     # or every write is rejected
+PANEL_COOKIE_SECURE=false                     # only if this is plain HTTP
+```
+
+Then:
+
+```bash
+docker compose up -d nginx django
+```
+
+Open `http://10.0.0.5:8081`.
+
+### Why the fourth one exists
+
+With `DJANGO_DEBUG=False` the session cookie is marked `Secure`, meaning the
+browser only ever sends it back over HTTPS. Browsers make an exception for
+`localhost` — which is why a tunnel works — but not for an IP address. Without
+`PANEL_COOKIE_SECURE=false`, signing in over `http://10.0.0.5:8081` succeeds,
+the cookie is discarded, and the next request is unauthenticated: you land back
+on the sign-in form with no error to explain it.
+
+Turning it off means the password, the authenticator code and the session
+cookie all cross the network in clear text, and anyone positioned to read them
+controls every domain this gateway serves. The Security page says so while it
+is off.
+
+That is a reasonable trade on a LAN you control or over a VPN. It is not one on
+a public address.
+
+### Two warnings about the port
+
+**`PANEL_BIND=0.0.0.0` publishes to the internet, and ufw will not stop it.**
+Docker writes its own iptables rules for a published port, below where ufw
+operates. Bind to a specific private address rather than relying on the
+firewall to contain a wildcard.
+
+**There is no HTTPS on 8081.** That listener is plain HTTP by design, because
+its intended use is a tunnel. If you want the panel reachable from anywhere
+with a password that is not sent in the clear, give it a hostname and a
+certificate instead — Security → Publish the panel, covered in
+[Part 3](#part-3--publishing-the-control-panel). That path gets TLS, HSTS, an
+address allowlist, optional client certificates and a real content security
+policy, and it is the one this project is built around.
+
 ## Your first certificate
 
 1. In the panel, **Domains → Add domain**. The gateway starts accepting the

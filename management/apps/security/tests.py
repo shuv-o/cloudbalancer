@@ -743,3 +743,43 @@ class HotPathCostTests(TestCase):
         server_block = config[: config.index("    # / ->")]
         self.assertEqual(server_block.count("limit_req "), 1)
         self.assertEqual(server_block.count("limit_conn "), 1)
+
+
+class CookieSecurityTests(TestCase):
+    """
+    Whether the session cookie is marked Secure.
+
+    This is the setting that decides whether the panel can be reached over
+    plain HTTP on a port at all. With it on, a browser accepts the cookie over
+    `http://localhost` but discards it over `http://<an-ip>` -- so sign-in
+    appears to succeed and then silently bounces back to the form, which is a
+    miserable thing to debug.
+    """
+
+    def test_cookies_are_secure_by_default(self):
+        from django.conf import settings
+
+        self.assertTrue(settings.PANEL_COOKIE_SECURE)
+        self.assertEqual(settings.SESSION_COOKIE_SECURE, settings.PANEL_COOKIE_SECURE)
+        self.assertEqual(settings.CSRF_COOKIE_SECURE, settings.PANEL_COOKIE_SECURE)
+
+    def test_turning_it_off_is_called_out_on_the_security_page(self):
+        """
+        A weakening that is only visible in a settings file is one nobody
+        revisits. It belongs next to the other exposure warnings.
+        """
+        from django.test import override_settings
+
+        domain = domain_create(name="control.example.com")
+        certificate_generate_self_signed(domain=domain)
+        policy = policy_update(
+            policy=PanelAccessPolicy.load(),
+            data={"panel_domain": "control.example.com", "is_published": True},
+        )
+
+        with override_settings(PANEL_COOKIE_SECURE=False):
+            warnings = " ".join(policy.exposure_warnings)
+            self.assertIn("clear text", warnings)
+
+        with override_settings(PANEL_COOKIE_SECURE=True):
+            self.assertNotIn("clear text", " ".join(policy.exposure_warnings))

@@ -111,6 +111,11 @@ jobs:
         working-directory: management
         run: pip install -r requirements.txt
 
+      # The default docker driver cannot export a build cache. Without this
+      # the build fails on cache-to rather than on anything to do with the
+      # image.
+      - uses: docker/setup-buildx-action@v3
+
       - name: Build the gateway image
         uses: docker/build-push-action@v6
         with:
@@ -164,8 +169,14 @@ jobs:
 
       - name: Validate the compose files
         run: |
+          # .env is not in the repository, so compose has nothing to interpolate
+          # the required variables from. The example file stands in, which also
+          # checks it is complete enough to bring the stack up.
+          cp .env.example .env
           docker compose config --quiet
           docker compose -f docker-compose.yml -f docker-compose.bench.yml config --quiet
+          rm .env
+          echo "Compose files are valid using .env.example alone."
 
       - name: Check shell scripts
         run: |

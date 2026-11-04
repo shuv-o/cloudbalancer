@@ -2,23 +2,36 @@
 # =============================================================================
 # Roll a new release onto the gateway.
 #
-# Runs on the server, invoked over SSH by CI or by hand. Images are already
-# built and pushed; this pulls them, swaps them in, verifies the result, and
-# puts the previous release back if the verification fails.
+# Runs on the server, invoked over SSH by CI or by hand. It swaps the images,
+# verifies the result, and puts the previous release back if the verification
+# fails.
 #
-# Production never builds. Compiling the traffic module takes minutes and can
-# fail, and a gateway is the wrong place to discover a build error.
+#   ./deploy.sh sha-a1b2c3d     pull that release from the registry
+#   ./deploy.sh local --build   build here from the current checkout
 #
-#   ./deploy.sh <image-tag>
+# Pulling is the normal path. Compiling the traffic module takes minutes and
+# can fail, and a gateway is the wrong place to discover a build error -- so CI
+# builds once and every server pulls the artefact that was tested.
+#
+# --build exists for the case before any of that is wired up, and for the day
+# the registry is unreachable and you need a release out regardless.
 # =============================================================================
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/cloudbalancer}"
 TAG="${1:-}"
+BUILD_LOCALLY=false
 STATE="${APP_DIR}/.deployed-tag"
 
+[[ "${2:-}" == "--build" ]] && BUILD_LOCALLY=true
+
 if [[ -z "$TAG" ]]; then
-    echo "usage: $0 <image-tag>" >&2
+    cat >&2 <<'USAGE'
+usage: deploy.sh <image-tag> [--build]
+
+  deploy.sh sha-a1b2c3d      pull that release from the registry
+  deploy.sh local --build    build here from the current checkout
+USAGE
     exit 2
 fi
 
@@ -36,11 +49,29 @@ previous=""
 log "Deploying ${TAG}${previous:+ (currently ${previous})}"
 
 # ---------------------------------------------------------------------------
-# Fetch first. Pulling is the slow part and nothing is disturbed while it runs,
-# so the window where the gateway is mid-change stays as short as possible.
+# Get the images ready first. This is the slow part and nothing is disturbed
+# while it runs, so the window where the gateway is mid-change stays short.
 # ---------------------------------------------------------------------------
-log "Pulling images"
-compose "$TAG" pull --quiet nginx django celery celery-beat panel
+if [[ "$BUILD_LOCALLY" == true ]]; then
+    log "Building images here (this compiles the traffic module -- give it a few minutes)"
+    compose "$TAG" build nginx django panel
+else
+    log "Pulling images"
+    if ! compose "$TAG" pull --quiet nginx django celery celery-beat panel; then
+        cat >&2 <<EOF
+
+Could not pull ${TAG}.
+
+  * If CI has not pushed this release yet, check the Actions tab.
+  * If the packages are private, this host needs to authenticate:
+        echo <token> | docker login ghcr.io -u <user> --password-stdin
+  * To build here instead, without the registry:
+        ./deploy.sh local --build
+
+EOF
+        exit 1
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Migrations before the new code serves anything. The django service runs them
@@ -127,7 +158,9 @@ if [[ -z "$previous" ]]; then
 fi
 
 log "Rolling back to ${previous}"
-compose "$previous" pull --quiet nginx django celery celery-beat panel
+if [[ "$previous" != "local" ]]; then
+    compose "$previous" pull --quiet nginx django celery celery-beat panel
+fi
 compose "$previous" up -d --no-build --remove-orphans
 
 if verify; then

@@ -3,7 +3,7 @@
 # copies the output into a volume that Nginx serves as static files, so the
 # panel costs nothing at runtime.
 # =============================================================================
-FROM node:22-alpine
+FROM node:22.23.4-alpine
 
 WORKDIR /app
 

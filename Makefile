@@ -71,6 +71,27 @@ seed: ## Load a demo topology pointing at the mock backends
 	docker compose exec django python manage.py seed_demo
 
 # ---------------------------------------------------------------------------
+# Updating a server
+# ---------------------------------------------------------------------------
+
+update: ## Pull the latest code and roll it out, building here (run on the server)
+	git pull --ff-only origin main
+	./deploy/deploy.sh local --build
+
+release: ## Roll out a release CI already built: make release TAG=sha-a1b2c3d
+	@test -n "$(TAG)" || (echo "usage: make release TAG=sha-a1b2c3d" && exit 1)
+	git fetch --quiet origin && git checkout --quiet --force $(TAG_REF)
+	./deploy/deploy.sh $(TAG)
+
+rollback: ## Go back to the release running before the current one
+	@test -f .deployed-tag || (echo "No release recorded yet." && exit 1)
+	@echo "Currently: $$(cat .deployed-tag)"
+	@echo "Pass the tag to return to:  make release TAG=<older-tag>"
+
+# `make release TAG=sha-abc1234` checks out the matching commit by default.
+TAG_REF ?= $(patsubst sha-%,%,$(TAG))
+
+# ---------------------------------------------------------------------------
 # Gateway
 # ---------------------------------------------------------------------------
 

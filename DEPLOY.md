@@ -1075,6 +1075,73 @@ If you want it anyway, the condition on the deploy job is one line:
 if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
 ```
 
+## Updating a server
+
+Three ways, depending on how much of the pipeline is wired up.
+
+### Before CI secrets are configured
+
+Build on the server. Slower — it compiles the traffic module — but it needs
+nothing but the repository:
+
+```bash
+ssh deploy@your-server
+cd /opt/cloudbalancer
+make update
+```
+
+That is `git pull` followed by `deploy/deploy.sh local --build`: build, migrate,
+swap, verify, and roll back if the verification fails.
+
+### Once CI is pushing images
+
+CI builds on every push to `main` and tags each image with the short commit
+SHA. Roll one out by hand:
+
+```bash
+ssh deploy@your-server
+cd /opt/cloudbalancer
+make release TAG=sha-a1b2c3d
+```
+
+Seconds rather than minutes, and the image is the one CI tested.
+
+Find the tag in the Actions run, or:
+
+```bash
+git log --oneline -5      # sha-<first 7 of any of these>
+```
+
+### Fully automatic
+
+```bash
+git tag -a v1.0.1 -m "Fix the panel timeout"
+git push origin v1.0.1
+```
+
+Nothing to do on the server.
+
+> **GitHub packages are private by default.** The first pull from a server will
+> fail with `denied` until you either make the packages public — repository →
+> Packages → each one → Package settings → Change visibility — or log the host
+> in once:
+>
+> ```bash
+> echo <a-token-with-read:packages> | docker login ghcr.io -u shuv-o --password-stdin
+> ```
+>
+> The deploy workflow logs in on every run, so this only affects manual pulls.
+
+### Rolling back
+
+Every successful deploy records its tag in `/opt/cloudbalancer/.deployed-tag`,
+and a failed one returns to the previous release on its own. To go back
+deliberately:
+
+```bash
+make release TAG=sha-<an-older-one>
+```
+
 ## What a deploy does
 
 `deploy/deploy.sh`, on the server:

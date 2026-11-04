@@ -486,6 +486,27 @@ make bench-up
 RATE=5000 DURATION=60s make bench
 ```
 
+### Django logs a clean start but the panel still answers 503
+
+Check what address gunicorn actually bound:
+
+```bash
+docker compose logs django | grep "Listening at"
+```
+
+```
+[INFO] Listening at: http://0.0.0.0:8000      <- correct
+[INFO] Listening at: http://127.0.0.1:8000    <- unreachable from Nginx
+```
+
+Loopback means gunicorn started without its `--bind` argument and fell back to
+its default. Nginx runs in a different container, so nothing it sends can
+arrive, and the logs look entirely healthy throughout.
+
+On a current build the startup sequence is `management/docker-entrypoint.sh`
+and this cannot happen. If you see it, you are running a build from before
+that — pull and redeploy.
+
 ### `DisallowedHost: Invalid HTTP_HOST header`
 
 Django is answering, but not for the name in the request.

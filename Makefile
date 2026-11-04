@@ -87,6 +87,9 @@ seed: ## Load a demo topology pointing at the mock backends
 # Updating a server
 # ---------------------------------------------------------------------------
 
+doctor: ## Report why the gateway is not working (paste the output when asking for help)
+	./deploy/doctor.sh
+
 update: ## Pull the latest code and roll it out, building here (run on the server)
 	git pull --ff-only origin main
 	./deploy/deploy.sh local --build

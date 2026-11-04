@@ -212,6 +212,38 @@ jobs:
           rm .env
           echo "Compose files are valid using .env.example alone."
 
+      - name: No service command contains a newline
+        run: |
+          # A YAML folded scalar (>) folds only the lines at the first line's
+          # indentation. Continuation lines indented further keep their
+          # newlines, and the shell then reads one command as several. That
+          # turned `gunicorn --bind 0.0.0.0:8000` into a bare `gunicorn`
+          # listening on loopback, unreachable from any other container, while
+          # the logs showed a clean start.
+          cp .env.example .env
+          docker compose config > /tmp/resolved.yml
+          rm .env
+          python - <<'PY'
+          import sys, yaml
+          services = yaml.safe_load(open("/tmp/resolved.yml"))["services"]
+          broken = []
+          for name, svc in services.items():
+              cmd = svc.get("command")
+              if not cmd:
+                  continue
+              text = cmd if isinstance(cmd, str) else " ".join(map(str, cmd))
+              if "\n" in text:
+                  broken.append((name, text))
+          if broken:
+              for name, text in broken:
+                  print(f"::error::service '{name}' has a multi-line command; "
+                        "the shell will read it as several commands")
+                  for line in text.split("\n"):
+                      print(f"    | {line.strip()}")
+              sys.exit(1)
+          print(f"All {len(services)} service commands are single-line.")
+          PY
+
       - name: Check shell scripts
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck

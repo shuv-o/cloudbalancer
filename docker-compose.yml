@@ -109,15 +109,9 @@ services:
   django:
     <<: *management
     container_name: cloudbalancer-django
-    command: >
-      sh -c "python manage.py migrate --noinput &&
-             python manage.py collectstatic --noinput &&
-             python manage.py bootstrap --skip-deploy &&
-             gunicorn config.wsgi:application
-               --bind 0.0.0.0:8000
-               --workers 4
-               --timeout 120
-               --access-logfile -"
+    # A script, not an inline chain. See management/docker-entrypoint.sh for
+    # why: a multi-line command here silently became several commands.
+    command: ["./docker-entrypoint.sh"]
     expose: ["8000"]
     depends_on:
       postgres: {condition: service_healthy}

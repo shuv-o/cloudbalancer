@@ -143,6 +143,7 @@ def _rule_context(rule: RoutingRule) -> dict:
         # backend router needs to match its own rules.
         "tls_server_name": rule.backend.tls_server_name or "$host",
         "cache_enabled": rule.cache_enabled,
+        "cache_mode": rule.cache_mode,
         "cache_ttl": rule.cache_ttl,
         "cache_min_uses": rule.cache_min_uses,
         "cache_ignore_query_string": rule.cache_ignore_query_string,

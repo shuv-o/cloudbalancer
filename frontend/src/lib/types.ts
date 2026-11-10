@@ -112,6 +112,7 @@ export interface RoutingRule {
   nginx_location: string;
   priority: number;
   cache_enabled: boolean;
+  cache_mode: string;
   cache_ttl: number;
   cache_bypass_auth: boolean;
   cache_key_headers: string[];

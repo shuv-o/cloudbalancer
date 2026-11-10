@@ -111,6 +111,7 @@
         proxy_cache off;
         chunked_transfer_encoding off;
 {% elif rule.cache_enabled %}
+        # Caching: {{ "static assets only" if rule.cache_mode == "static" else "every cacheable response" }}.
         proxy_cache         gateway_cache;
 {% if rule.cache_ignore_query_string %}
         # Keyed on the path alone. A flood carrying random query parameters
@@ -154,10 +155,31 @@
 {% if rule.cache_bypass_auth %}
 
         # Authenticated requests reach the backend and are never stored.
-        # Both directives are needed: bypass on its own would still write the
-        # response into the cache for the next anonymous caller.
+        # proxy_cache_bypass on its own would still write the response into the
+        # cache for the next anonymous caller, so proxy_no_cache below carries
+        # these same variables.
         proxy_cache_bypass $http_authorization $cookie_sessionid $cookie_session;
-        proxy_no_cache     $http_authorization $cookie_sessionid $cookie_session;
+{% endif %}
+{% if rule.cache_mode == "static" %}
+
+        # Static assets only. $deny_dynamic_cache is non-empty for any response
+        # that is not an image, font, stylesheet, script, or media file, which
+        # keeps HTML and API responses out of the cache without anyone having to
+        # describe them in advance.
+        #
+        # It appears here and nowhere else. proxy_cache_bypass is evaluated
+        # before the request is sent, when $upstream_http_content_type is still
+        # empty -- the map would read that as "not static", bypass every lookup,
+        # and the cache would never be read from at all. Storing is a decision
+        # that can be made from the response; reading is not.
+{% endif %}
+{% set no_cache = [] %}
+{% if rule.cache_mode == "static" %}{% set _ = no_cache.append("$deny_dynamic_cache") %}{% endif %}
+{% if rule.cache_bypass_auth %}{% set _ = no_cache.extend(["$http_authorization", "$cookie_sessionid", "$cookie_session"]) %}{% endif %}
+{% if no_cache %}
+        # One directive, not several: nginx keeps only the last proxy_no_cache
+        # in a context, so a second would silently discard the first.
+        proxy_no_cache {{ no_cache|join(" ") }};
 {% endif %}
 {% endif %}
 

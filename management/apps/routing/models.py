@@ -58,9 +58,25 @@ class RoutingRule(models.Model):
     )
 
     # Caching
+    class CacheMode(models.TextChoices):
+        STATIC = "static", "Static files only"
+        EVERYTHING = "everything", "Everything this route serves"
+
     cache_enabled = models.BooleanField(
-        default=False,
+        default=True,
         help_text="Enable HTTP caching at the gateway for this route",
+    )
+    cache_mode = models.CharField(
+        max_length=16,
+        choices=CacheMode.choices,
+        default=CacheMode.STATIC,
+        help_text=(
+            "'Static files only' stores images, fonts, stylesheets, scripts "
+            "and media, decided by the content type the backend actually "
+            "returned, and lets everything else through uncached. "
+            "'Everything' stores any response the backend permits, which is "
+            "only correct where no response differs between callers."
+        ),
     )
     cache_ttl = models.IntegerField(
         default=600,

@@ -43,6 +43,7 @@ interface DraftRule {
   match_value: string;
   priority: number;
   cache_enabled: boolean;
+  cache_mode: string;
   cache_ttl: number;
   cache_bypass_auth: boolean;
   cache_allow_authenticated: boolean;
@@ -65,7 +66,8 @@ function blankRule(domainId: number, backendId: number): DraftRule {
     match_type: "path_prefix",
     match_value: "/",
     priority: 100,
-    cache_enabled: false,
+    cache_enabled: true,
+    cache_mode: "static",
     cache_ttl: 600,
     cache_bypass_auth: true,
     cache_allow_authenticated: false,
@@ -127,7 +129,8 @@ function RuleForm({
   // What differs from the default, per collapsed section. A section that hides
   // a changed setting announces the count rather than concealing it.
   const cacheChanged =
-    (draft.cache_enabled ? 1 : 0) +
+    (!draft.cache_enabled ? 1 : 0) +
+    (draft.cache_mode !== "static" ? 1 : 0) +
     (draft.cache_ttl !== 600 ? 1 : 0) +
     (draft.cache_min_uses !== 1 ? 1 : 0) +
     (!draft.cache_bypass_auth ? 1 : 0) +
@@ -258,7 +261,11 @@ function RuleForm({
               {draft.strip_prefix && draft.match_value !== "/"
                 ? `, with ${draft.match_value} removed from the path`
                 : ""}
-              {draft.cache_enabled ? `, cached for ${duration(draft.cache_ttl)}` : ""}
+              {draft.cache_enabled
+                ? draft.cache_mode === "static"
+                  ? `, with images, fonts, stylesheets and scripts cached for ${duration(draft.cache_ttl)}`
+                  : `, with every cacheable response kept for ${duration(draft.cache_ttl)}`
+                : ""}
               {!draft.proxy_buffering ? ", streamed rather than buffered" : ""}
               {draft.rate_limit_enabled
                 ? `, limited to ${draft.rate_limit_rps} requests a second per client`
@@ -290,6 +297,34 @@ function RuleForm({
 
           {draft.cache_enabled && (
             <>
+              <Field
+                label="What to cache"
+                help={
+                  draft.cache_mode === "static"
+                    ? "Decided by the content type the backend returned, not by the file extension in the URL — so a route that answers an error page where an asset was expected does not cache the error."
+                    : "Every response the backend permits, including HTML and API output. Only correct where no response differs between callers."
+                }
+              >
+                <select
+                  className="input"
+                  value={draft.cache_mode}
+                  onChange={(e) => setDraft({ ...draft, cache_mode: e.target.value })}
+                >
+                  <option value="static">Static files only</option>
+                  <option value="everything">Everything this route serves</option>
+                </select>
+              </Field>
+
+              {draft.cache_mode === "everything" && (
+                <Notice tone="warn">
+                  <span>
+                    HTML and API responses will be stored and replayed to other callers.
+                    If any response here differs between users, one person's will be
+                    served to another.
+                  </span>
+                </Notice>
+              )}
+
               <div className="row-2">
                 <Field
                   label="Keep for (seconds)"
@@ -875,6 +910,7 @@ export function RoutesPage() {
             match_value: editing.match_value,
             priority: editing.priority,
             cache_enabled: editing.cache_enabled,
+            cache_mode: editing.cache_mode ?? "static",
             cache_ttl: editing.cache_ttl,
             cache_bypass_auth: editing.cache_bypass_auth,
             cache_allow_authenticated: editing.cache_allow_authenticated,

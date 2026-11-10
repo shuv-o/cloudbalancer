@@ -17,6 +17,42 @@ map $upstream_cache_status $cache_status_display {
 }
 
 # ---------------------------------------------------------------------------
+# Is this response a static asset?
+#
+# Decided on the response's own content type rather than the request's file
+# extension, because the extension is a guess about what the backend will send
+# and the content type is what it actually sent. A route serving /assets/x.js
+# through a framework that answers with an error page is the case that makes
+# the difference.
+#
+# This can only ever govern *storing* a response -- see the note in
+# 20-servers.conf about why it must never reach proxy_cache_bypass.
+# ---------------------------------------------------------------------------
+map $upstream_http_content_type $response_is_static {
+    default                            0;
+    ~*^image/                          1;
+    ~*^font/                           1;
+    ~*^audio/                          1;
+    ~*^video/                          1;
+    ~*^text/css                        1;
+    ~*^text/javascript                 1;
+    ~*^application/javascript          1;
+    ~*^application/x-javascript        1;
+    ~*^application/wasm                1;
+    ~*^application/vnd\.ms-fontobject  1;
+    ~*^application/x-font              1;
+    ~*^application/font-woff           1;
+}
+
+# proxy_no_cache stores the response when every parameter is empty or "0", and
+# refuses when any is anything else. So "static" has to map to the empty
+# string: it is the value that means "no objection to caching this".
+map $response_is_static $deny_dynamic_cache {
+    1        "";
+    default  "1";
+}
+
+# ---------------------------------------------------------------------------
 # Accept-Encoding, normalised for use in cache keys.
 #
 # Clients send dozens of spellings of the same three encodings. Keying on the

@@ -34,7 +34,14 @@ class RoutingRuleInputSerializer(serializers.Serializer):
     match_value = serializers.CharField(max_length=255, default="/")
     priority = serializers.IntegerField(default=100)
 
-    cache_enabled = serializers.BooleanField(required=False, default=False)
+    cache_enabled = serializers.BooleanField(required=False, default=True)
+    cache_mode = serializers.CharField(
+        required=False, allow_blank=True, default="static"
+    )
+
+    def validate_cache_mode(self, value: str) -> str:
+        # An untouched form field arrives blank.
+        return value.strip() or "static"
     cache_ttl = serializers.IntegerField(required=False, default=600, min_value=0)
     cache_bypass_auth = serializers.BooleanField(required=False, default=True)
     cache_min_uses = serializers.IntegerField(required=False, default=1, min_value=1)
@@ -71,7 +78,8 @@ class RoutingRuleOutputSerializer(serializers.ModelSerializer):
         fields = [
             "id", "domain", "domain_name", "backend", "backend_name",
             "match_type", "match_type_label", "match_value", "nginx_location", "priority",
-            "cache_enabled", "cache_ttl", "cache_bypass_auth", "cache_min_uses",
+            "cache_enabled", "cache_mode", "cache_ttl", "cache_bypass_auth",
+            "cache_min_uses",
             "cache_ignore_query_string", "cache_key_headers",
             "cache_ignore_upstream_control", "cache_allow_authenticated",
             "strip_prefix", "custom_headers",

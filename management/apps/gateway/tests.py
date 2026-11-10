@@ -169,10 +169,23 @@ class CacheDirectiveTests(TestCase):
         """
         Bypass on its own still writes the response into the cache for the next
         anonymous caller. Both directives are needed.
+
+        Matched per directive rather than as a literal line: proxy_no_cache
+        also carries the static-content filter, so its argument list and its
+        spacing depend on the route's cache mode. What has to hold is that the
+        authenticated-request variables appear in both directives.
         """
         config = self._render()
-        self.assertIn("proxy_cache_bypass $http_authorization", config)
-        self.assertIn("proxy_no_cache     $http_authorization", config)
+
+        def directive(name: str) -> str:
+            return next(
+                line.strip()
+                for line in config.splitlines()
+                if line.strip().startswith(name)
+            )
+
+        self.assertIn("$http_authorization", directive("proxy_cache_bypass"))
+        self.assertIn("$http_authorization", directive("proxy_no_cache"))
 
     def test_accept_encoding_is_normalised_in_the_key(self):
         """

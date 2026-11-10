@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 import { api } from "../lib/api";
 import { useAction, useResource } from "../lib/hooks";
+import { useCan } from "../lib/session";
 import { CacheStats, Domain, RoutingRule, TimeSeries } from "../lib/types";
 import { SeriesCaption, useSeriesSelection } from "../components/SeriesControls";
 import { bytes, compact, percent } from "../lib/format";
@@ -111,6 +112,9 @@ function PurgeForm({
 }
 
 export function Cache() {
+  // Hiding, not protecting: every endpoint behind these
+  // buttons checks the role itself.
+  const canWrite = useCan("operator");
   const { data: cache, initialLoading, reload } = useResource<CacheStats>(
     "/api/v1/monitoring/cache/",
     5000,
@@ -148,14 +152,16 @@ export function Cache() {
           </p>
         </div>
         <div className="page-actions">
-          {(domains?.length ?? 0) > 0 && (
+          {canWrite && (domains?.length ?? 0) > 0 && (
             <button className="btn" onClick={() => setPurging(true)}>
               Drop a URL
             </button>
           )}
-          <button className="btn btn--danger" onClick={() => setConfirmEmpty(true)}>
-            Empty the cache
-          </button>
+          {canWrite && (
+            <button className="btn btn--danger" onClick={() => setConfirmEmpty(true)}>
+              Empty the cache
+            </button>
+          )}
         </div>
       </header>
 

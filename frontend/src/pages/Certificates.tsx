@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 import { api } from "../lib/api";
 import { useAction, useResource } from "../lib/hooks";
+import { useCan } from "../lib/session";
 import { AcmeAccount, Certificate, Domain } from "../lib/types";
 import { dateTime, expiryPhrase, relativeTime } from "../lib/format";
 import {
@@ -421,6 +422,9 @@ function ImportForm({
 }
 
 export function Certificates() {
+  // Hiding, not protecting: every endpoint behind these
+  // buttons checks the role itself.
+  const canWrite = useCan("operator");
   const { data: certificates, initialLoading, reload } = useResource<Certificate[]>(
     "/api/v1/certificates/",
     15000,
@@ -486,12 +490,12 @@ export function Certificates() {
           </p>
         </div>
         <div className="page-actions">
-          {hasAccount && hasDomain && (
+          {canWrite && hasAccount && hasDomain && (
             <button className="btn btn--primary" onClick={() => setRequesting(true)}>
               Get a certificate
             </button>
           )}
-          {hasDomain && (
+          {canWrite && hasDomain && (
             <button className="btn" onClick={() => setImporting(true)}>
               Upload one
             </button>

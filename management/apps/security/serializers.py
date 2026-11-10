@@ -10,6 +10,7 @@ from apps.security.models import (
     PanelAccessPolicy,
     TrafficProtectionPolicy,
 )
+from apps.security.roles import Role
 
 
 class CidrListField(serializers.ListField):
@@ -150,3 +151,50 @@ class BlockedAddressOutputSerializer(serializers.ModelSerializer):
             "expires_at", "is_active",
             "created_by_username", "created_at",
         ]
+
+
+class OperatorCreateSerializer(serializers.Serializer):
+    """
+    A new account.
+
+    The password is validated against Django's configured validators inside
+    the service rather than here, so the same rules apply however an account
+    is made -- including from the shell.
+    """
+
+    username = serializers.RegexField(
+        r"^[A-Za-z0-9][A-Za-z0-9._@+-]{0,149}$",
+        max_length=150,
+        error_messages={
+            "invalid": (
+                "A username may contain letters, digits and . _ @ + - and must "
+                "start with a letter or digit."
+            )
+        },
+    )
+    email = serializers.EmailField(required=False, allow_blank=True, default="")
+    password = serializers.CharField(
+        write_only=True,
+        trim_whitespace=False,
+        style={"input_type": "password"},
+    )
+    role = serializers.ChoiceField(choices=Role.choices)
+
+
+class OperatorUpdateSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(choices=Role.choices, required=False)
+    is_active = serializers.BooleanField(required=False)
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError("Nothing to change.")
+        return attrs
+
+
+class PasswordChangeSerializer(serializers.Serializer):
+    current_password = serializers.CharField(
+        write_only=True, trim_whitespace=False, style={"input_type": "password"}
+    )
+    new_password = serializers.CharField(
+        write_only=True, trim_whitespace=False, style={"input_type": "password"}
+    )

@@ -13,6 +13,8 @@ import { Certificates } from "./pages/Certificates";
 import { Cache } from "./pages/Cache";
 import { Deploys } from "./pages/Deploys";
 import { Security } from "./pages/Security";
+import { Account, ForcePasswordChange } from "./pages/Account";
+import { SessionProvider } from "./lib/session";
 import { TotpSetup } from "./pages/TotpSetup";
 
 function Mark() {
@@ -38,7 +40,11 @@ const NAV = [
   { to: "/certificates", label: "Certificates" },
   { to: "/cache", label: "Cache" },
   { to: "/deploys", label: "Deploys" },
-  { to: "/security", label: "Security" },
+  // Every endpoint behind this page is admin-only, so for anyone else the
+  // link leads to a screen of permission errors. Hiding it is presentation,
+  // not protection -- the server refuses either way.
+  { to: "/security", label: "Security", adminOnly: true },
+  { to: "/account", label: "Your account" },
 ] as const;
 
 /**
@@ -100,7 +106,9 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         </div>
 
         <div className="rail__nav">
-          {NAV.map((item) => (
+          {NAV.filter(
+            (item) => !("adminOnly" in item && item.adminOnly) || user.role === "admin",
+          ).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -120,6 +128,11 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span className="mono" style={{ flex: 1, overflow: "hidden" }}>
               {user.username}
+              {user.role && (
+                <span className="rail__role" title={`Your role is ${user.role}`}>
+                  {user.role}
+                </span>
+              )}
             </span>
             <button
               className="btn btn--ghost btn--small"
@@ -144,7 +157,8 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
           <Route path="/certificates" element={<Certificates />} />
           <Route path="/cache" element={<Cache />} />
           <Route path="/deploys" element={<Deploys />} />
-          <Route path="/security" element={<Security />} />
+          <Route path="/security" element={<Security user={user} />} />
+          <Route path="/account" element={<Account user={user} />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
@@ -202,6 +216,13 @@ function AuthGate() {
   // Policy can require a second factor at any time, including for accounts that
   // already existed. Enrollment therefore stands in front of the whole panel
   // rather than being something an operator could put off.
+  // Before the second-factor gate, matching the order the server enforces.
+  // Both can be pending on a new account, and the password is the one the
+  // admin who created it already knows.
+  if (user.password_change_required) {
+    return <ForcePasswordChange />;
+  }
+
   if (user.totp_setup_required) {
     return (
       <TotpSetup
@@ -210,7 +231,11 @@ function AuthGate() {
     );
   }
 
-  return <Shell user={user} onSignOut={signOut} />;
+  return (
+    <SessionProvider user={user}>
+      <Shell user={user} onSignOut={signOut} />
+    </SessionProvider>
+  );
 }
 
 export function App() {

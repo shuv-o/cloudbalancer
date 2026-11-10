@@ -17,7 +17,9 @@ from django.contrib.auth import authenticate, login, logout
 from django.middleware.csrf import get_token, rotate_token
 from django.utils import timezone
 from rest_framework import serializers, status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
+
+from apps.security.roles import Role, role_of
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -66,6 +68,14 @@ def _user_payload(user) -> dict:
         "full_name": user.get_full_name(),
         "is_staff": user.is_staff,
         "is_superuser": user.is_superuser,
+        # The panel hides what this account cannot do. Hiding is not the
+        # control -- every endpoint checks the role itself -- but a button
+        # that only ever returns 403 is worse than no button.
+        "role": role_of(user),
+        "password_change_required": bool(
+            getattr(getattr(user, "operator_profile", None),
+                    "password_change_required", False)
+        ),
     }
 
 
@@ -199,7 +209,13 @@ class LoginApi(APIView):
 class LogoutApi(APIView):
     """
     POST /api/v1/auth/logout/  — end the session
+
+    Authentication is the whole requirement. Signing out is never something a
+    role should be able to withhold, and an account holding no role at all --
+    one created in the shell, or stranded by a part-applied migration -- would
+    otherwise be refused here and left with a session it could not end.
     """
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         logout(request)
@@ -244,6 +260,8 @@ class PasskeyRegisterOptionsApi(APIView):
     """
     POST /api/v1/auth/passkey/register/options/  — begin enrolling a passkey
     """
+    # Your own account, not the gateway's configuration.
+    required_role = Role.VIEWER
 
     def post(self, request):
         try:
@@ -259,6 +277,8 @@ class PasskeyRegisterVerifyApi(APIView):
     """
     POST /api/v1/auth/passkey/register/verify/  — finish enrolling a passkey
     """
+    # Your own account, not the gateway's configuration.
+    required_role = Role.VIEWER
 
     def post(self, request):
         credential = request.data.get("credential")

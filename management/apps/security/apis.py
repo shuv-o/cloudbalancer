@@ -1,9 +1,9 @@
 """Security API views."""
 import logging
 
+from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.models import User
 from rest_framework import status
-from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -19,6 +19,9 @@ from apps.security.selectors import (
 )
 from apps.security.serializers import (
     AuditEventOutputSerializer,
+    OperatorCreateSerializer,
+    OperatorUpdateSerializer,
+    PasswordChangeSerializer,
     BlockedAddressInputSerializer,
     BlockedAddressOutputSerializer,
     ProtectionInputSerializer,
@@ -31,10 +34,14 @@ from apps.security.serializers import (
     TotpResetSerializer,
 )
 from apps.security.passkeys import passkeys_available
+from apps.security.roles import DESCRIPTIONS, IsAdmin, Role, role_of
 from apps.security.services import (
     SecurityError,
     address_block,
     address_unblock,
+    operator_create,
+    operator_update,
+    password_change,
     policy_update,
     protection_update,
     totp_begin_enrollment,
@@ -47,17 +54,12 @@ from apps.security.services import (
 
 logger = logging.getLogger(__name__)
 
-class IsSuperuser(IsAdminUser):
-    def has_permission(self, request, view):
-        return bool(request.user and request.user.is_superuser)
-
-
 class PolicyApi(APIView):
     """
     GET   /api/v1/security/policy/  — how the panel may be reached
     PATCH /api/v1/security/policy/  — change it, then redeploy the gateway
     """
-    permission_classes = [IsSuperuser]
+    permission_classes = [IsAdmin]
 
     def get(self, request):
         return Response(PolicyOutputSerializer(policy_get()).data)
@@ -84,7 +86,7 @@ class SecuritySummaryApi(APIView):
     """
     GET /api/v1/security/summary/  — what is protecting the panel, and who is trying
     """
-    permission_classes = [IsSuperuser]
+    permission_classes = [IsAdmin]
 
     def get(self, request):
         return Response(security_summary())
@@ -94,7 +96,7 @@ class AuditApi(APIView):
     """
     GET /api/v1/security/audit/  — everything that changed, and who changed it
     """
-    permission_classes = [IsSuperuser]
+    permission_classes = [IsAdmin]
 
     def get(self, request):
         limit = min(int(request.query_params.get("limit", 100)), 500)
@@ -105,7 +107,7 @@ class LoginAttemptApi(APIView):
     """
     GET /api/v1/security/attempts/  — recent sign-in attempts
     """
-    permission_classes = [IsSuperuser]
+    permission_classes = [IsAdmin]
 
     def get(self, request):
         limit = min(int(request.query_params.get("limit", 100)), 500)
@@ -114,14 +116,107 @@ class LoginAttemptApi(APIView):
         return Response(LoginAttemptOutputSerializer(attempts, many=True).data)
 
 
+class RoleCatalogueApi(APIView):
+    """
+    GET /api/v1/security/roles/  — the roles, and what each one means
+
+    Served rather than hard-coded in the panel so the wording an admin reads
+    when assigning a role is the same wording this module enforces.
+    """
+    required_role = Role.VIEWER
+
+    def get(self, request):
+        return Response({
+            "roles": [
+                {"value": value, "label": label, "description": DESCRIPTIONS[value]}
+                for value, label in Role.choices
+            ],
+            "your_role": role_of(request.user),
+        })
+
+
 class OperatorApi(APIView):
     """
-    GET /api/v1/security/operators/  — accounts, and whether each has a second factor
+    GET  /api/v1/security/operators/  — accounts, roles, and second factors
+    POST /api/v1/security/operators/  — add one
     """
-    permission_classes = [IsSuperuser]
+    permission_classes = [IsAdmin]
 
     def get(self, request):
         return Response({"operators": operator_list()})
+
+    def post(self, request):
+        serializer = OperatorCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            user = operator_create(actor=request.user, **serializer.validated_data)
+        except SecurityError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {
+                "id": user.pk,
+                "username": user.get_username(),
+                "role": serializer.validated_data["role"],
+                # Said plainly, because the admin has to pass the password on
+                # and should know it will not keep working.
+                "note": (
+                    f"{user.get_username()} must change this password at their "
+                    "first sign-in, and set up a second factor before the panel "
+                    "will do anything else."
+                ),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class OperatorDetailApi(APIView):
+    """
+    PATCH /api/v1/security/operators/<id>/  — change a role, or switch an account off
+    """
+    permission_classes = [IsAdmin]
+
+    def patch(self, request, operator_id: int):
+        target = User.objects.filter(pk=operator_id).first()
+        if target is None:
+            return Response({"error": "No such account."}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = OperatorUpdateSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            operator_update(
+                actor=request.user, target_user=target, **serializer.validated_data
+            )
+        except SecurityError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({"operators": operator_list()})
+
+
+class PasswordChangeApi(APIView):
+    """
+    POST /api/v1/security/password/  — change your own password
+
+    Every role may do this, and an account held at a forced change can reach
+    nothing else until it does.
+    """
+    required_role = Role.VIEWER
+
+    def post(self, request):
+        serializer = PasswordChangeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            password_change(user=request.user, **serializer.validated_data)
+        except SecurityError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Django derives a session auth hash from the password, so without
+        # this the person is signed out by their own successful change.
+        update_session_auth_hash(request, request.user)
+        return Response({"changed": True})
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +230,10 @@ class TotpSetupApi(APIView):
     Returns the secret and a QR code. Nothing changes about signing in until
     the code is confirmed, so an abandoned setup cannot lock anyone out.
     """
+    # Acting on your own account, not on the gateway's configuration.
+    # A viewer has to be able to do this: the second-factor requirement
+    # holds every account at enrolment until it is done.
+    required_role = Role.VIEWER
 
     def post(self, request):
         try:
@@ -150,6 +249,10 @@ class TotpConfirmApi(APIView):
     The recovery codes come back here and are never shown again: only their
     hashes are stored.
     """
+    # Acting on your own account, not on the gateway's configuration.
+    # A viewer has to be able to do this: the second-factor requirement
+    # holds every account at enrolment until it is done.
+    required_role = Role.VIEWER
 
     def post(self, request):
         serializer = TotpConfirmSerializer(data=request.data)
@@ -175,6 +278,10 @@ class TotpDisableApi(APIView):
     """
     POST /api/v1/security/totp/disable/  — remove your own authenticator
     """
+    # Acting on your own account, not on the gateway's configuration.
+    # A viewer has to be able to do this: the second-factor requirement
+    # holds every account at enrolment until it is done.
+    required_role = Role.VIEWER
 
     def post(self, request):
         serializer = TotpDisableSerializer(data=request.data)
@@ -198,7 +305,7 @@ class TotpResetApi(APIView):
 
     The break-glass path for a lost device. Superusers only, and recorded.
     """
-    permission_classes = [IsSuperuser]
+    permission_classes = [IsAdmin]
 
     def post(self, request):
         serializer = TotpResetSerializer(data=request.data)
@@ -225,6 +332,10 @@ class TotpStatusApi(APIView):
     """
     GET /api/v1/security/totp/status/  — whether this account has a second factor
     """
+    # Acting on your own account, not on the gateway's configuration.
+    # A viewer has to be able to do this: the second-factor requirement
+    # holds every account at enrolment until it is done.
+    required_role = Role.VIEWER
 
     def get(self, request):
         from apps.security.models import TotpDevice
@@ -247,7 +358,7 @@ class ProtectionApi(APIView):
     GET   /api/v1/security/protection/  — per-address limits, and their limits
     PATCH /api/v1/security/protection/  — change them, then redeploy
     """
-    permission_classes = [IsSuperuser]
+    permission_classes = [IsAdmin]
 
     def get(self, request):
         return Response({
@@ -279,7 +390,7 @@ class BlockedAddressApi(APIView):
     banning is deliberately not built in here: those tools already do it
     properly, and a log-tailing loop would be a poor imitation.
     """
-    permission_classes = [IsSuperuser]
+    permission_classes = [IsAdmin]
 
     def get(self, request):
         return Response(
@@ -315,7 +426,7 @@ class BlockedAddressDetailApi(APIView):
     """
     DELETE /api/v1/security/blocked/<id>/  — stop refusing an address
     """
-    permission_classes = [IsSuperuser]
+    permission_classes = [IsAdmin]
 
     def delete(self, request, blocked_id):
         from apps.security.models import BlockedAddress
@@ -336,6 +447,10 @@ class PasskeyApi(APIView):
     """
     GET    /api/v1/security/passkeys/  — the signed-in operator's passkeys
     """
+    # Acting on your own account, not on the gateway's configuration.
+    # A viewer has to be able to do this: the second-factor requirement
+    # holds every account at enrolment until it is done.
+    required_role = Role.VIEWER
 
     def get(self, request):
         from apps.security.models import Passkey
@@ -360,6 +475,10 @@ class PasskeyDetailApi(APIView):
     """
     DELETE /api/v1/security/passkeys/<id>/  — remove one of your own passkeys
     """
+    # Acting on your own account, not on the gateway's configuration.
+    # A viewer has to be able to do this: the second-factor requirement
+    # holds every account at enrolment until it is done.
+    required_role = Role.VIEWER
 
     def delete(self, request, passkey_id: int):
         from apps.security.models import Passkey

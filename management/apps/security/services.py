@@ -381,11 +381,13 @@ def totp_reset_for_user(*, actor, target_user) -> None:
     """
     Clear another operator's authenticator, for when a device is lost.
 
-    Superusers only, and recorded — this is the break-glass path and it should
+    Admins only, and recorded — this is the break-glass path and it should
     be obvious in the audit trail when someone takes it.
     """
-    if not actor.is_superuser:
-        raise SecurityError("Only a superuser can reset another operator's authenticator.")
+    from apps.security.roles import Role, has_at_least
+
+    if not has_at_least(actor, Role.ADMIN):
+        raise SecurityError("Only an admin can reset another operator's authenticator.")
     if actor.pk == target_user.pk:
         raise SecurityError(
             "Use the remove option on your own account, which asks for your password "
@@ -522,3 +524,173 @@ def address_unblock(*, cidr: str) -> bool:
     if deleted:
         logger.info("Unblocked %s", cidr)
     return bool(deleted)
+
+
+# ---------------------------------------------------------------------------
+# Operators
+#
+# Onboarding was a shell command until now, which meant it was undocumented,
+# unaudited, and reached for by whoever had SSH rather than whoever had admin.
+# ---------------------------------------------------------------------------
+
+def _profile_for(user):
+    """The profile row, created if an older account has none."""
+    from apps.security.models import OperatorProfile
+
+    profile, _ = OperatorProfile.objects.get_or_create(user=user)
+    return profile
+
+
+def operator_create(*, actor, username: str, email: str, password: str, role: str):
+    """
+    Add an account, with a role and a password its owner must replace.
+
+    The admin doing this chooses the first password and therefore knows it, so
+    the account is flagged to require a change at first sign-in. Without that,
+    every account would permanently share its password with whoever created it,
+    and the audit trail would name a person who was not necessarily the one
+    acting.
+    """
+    from django.contrib.auth.models import User
+    from django.contrib.auth.password_validation import validate_password
+    from django.core.exceptions import ValidationError as DjangoValidationError
+
+    from apps.security.roles import Role, has_at_least
+
+    if not has_at_least(actor, Role.ADMIN):
+        raise SecurityError("Only an admin can add an operator.")
+
+    username = (username or "").strip()
+    if not username:
+        raise SecurityError("A username is required.")
+    if User.objects.filter(username__iexact=username).exists():
+        raise SecurityError(f"An account named '{username}' already exists.")
+
+    if role not in Role.values:
+        raise SecurityError(f"'{role}' is not a role.")
+
+    try:
+        validate_password(password)
+    except DjangoValidationError as exc:
+        raise SecurityError(" ".join(exc.messages)) from exc
+
+    user = User.objects.create_user(
+        username=username,
+        email=(email or "").strip(),
+        password=password,
+        # The operators list and the "without a second factor" count both key
+        # off is_staff. An account missing it is invisible on the page meant
+        # to show every account.
+        is_staff=True,
+        is_superuser=False,
+    )
+
+    profile = _profile_for(user)
+    profile.role = role
+    profile.password_change_required = True
+    profile.created_by = actor if getattr(actor, "pk", None) else None
+    profile.save(update_fields=["role", "password_change_required", "created_by", "updated_at"])
+
+    logger.info("%s added operator '%s' as %s", actor, username, role)
+    return user
+
+
+def operator_update(*, actor, target_user, role: str | None = None,
+                    is_active: bool | None = None):
+    """
+    Change what an account may do, or switch it off.
+
+    Refuses to act on your own account. An admin who demotes themselves cannot
+    undo it, and one who deactivates themselves is locked out immediately --
+    both of which would need the shell to recover from, which is the thing
+    this exists to avoid.
+    """
+    from apps.security.roles import Role, has_at_least
+
+    if not has_at_least(actor, Role.ADMIN):
+        raise SecurityError("Only an admin can change an operator.")
+    if actor.pk == target_user.pk:
+        raise SecurityError(
+            "You cannot change your own role or switch off your own account. "
+            "Ask another admin."
+        )
+    if target_user.is_superuser:
+        raise SecurityError(
+            "This account is a Django superuser, so its role is fixed at admin. "
+            "Change it with manage.py if that is really what you want."
+        )
+
+    if role is not None:
+        if role not in Role.values:
+            raise SecurityError(f"'{role}' is not a role.")
+        profile = _profile_for(target_user)
+        profile.role = role
+        profile.save(update_fields=["role", "updated_at"])
+
+    if is_active is not None:
+        target_user.is_active = is_active
+        target_user.save(update_fields=["is_active"])
+        if not is_active:
+            # A deactivated account with a live session would keep working
+            # until the session expired, which is not what switching someone
+            # off is understood to mean.
+            _end_sessions_for(target_user)
+
+    logger.info("%s changed operator '%s'", actor, target_user.get_username())
+    return target_user
+
+
+def _end_sessions_for(user) -> int:
+    """
+    Drop every session belonging to this account.
+
+    Django has no index from user to session, so this reads the table and
+    decodes each one. That is acceptable here: it happens when an operator is
+    switched off or has their password changed, not on any hot path.
+    """
+    from django.contrib.sessions.models import Session
+
+    ended = 0
+    for session in Session.objects.filter(expire_date__gte=timezone.now()):
+        if str(session.get_decoded().get("_auth_user_id")) == str(user.pk):
+            session.delete()
+            ended += 1
+    return ended
+
+
+def password_change(*, user, current_password: str, new_password: str) -> None:
+    """
+    Replace your own password, proving you know the current one.
+
+    Every other session ends as a consequence, because Django derives a
+    session auth hash from the password and every session carrying the old one
+    stops validating. That is the behaviour worth having: someone changing a
+    password they believe is compromised means it, and leaving the other
+    session alive would make the change ceremonial.
+
+    The caller's own session dies the same way, so the view must follow this
+    with update_session_auth_hash() or the person is signed out by their own
+    password change.
+    """
+    from django.contrib.auth.password_validation import validate_password
+    from django.core.exceptions import ValidationError as DjangoValidationError
+
+    if not user.check_password(current_password):
+        raise SecurityError("That is not your current password.")
+    if current_password == new_password:
+        raise SecurityError("The new password is the same as the old one.")
+
+    try:
+        validate_password(new_password, user=user)
+    except DjangoValidationError as exc:
+        raise SecurityError(" ".join(exc.messages)) from exc
+
+    user.set_password(new_password)
+    user.save(update_fields=["password"])
+
+    profile = _profile_for(user)
+    if profile.password_change_required:
+        profile.password_change_required = False
+        profile.save(update_fields=["password_change_required", "updated_at"])
+
+    logger.info("%s changed their password", user.get_username())

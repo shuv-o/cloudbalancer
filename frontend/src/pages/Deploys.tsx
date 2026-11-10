@@ -1,11 +1,15 @@
 import { useState } from "react";
 import { api } from "../lib/api";
 import { useAction, useResource } from "../lib/hooks";
+import { useCan } from "../lib/session";
 import { DeployLog, GatewayStatus } from "../lib/types";
 import { dateTime, relativeTime } from "../lib/format";
 import { Empty, Modal, Notice, Panel, Row, Tag, useToast } from "../components/ui";
 
 export function Deploys() {
+  // Hiding, not protecting: every endpoint behind these
+  // buttons checks the role itself.
+  const canWrite = useCan("operator");
   const { data: logs, initialLoading, reload } = useResource<DeployLog[]>(
     "/api/v1/routing/deploys/?limit=50",
     10000,
@@ -51,9 +55,11 @@ export function Deploys() {
           <button className="btn" onClick={() => showPreview()} disabled={previewing}>
             {previewing ? "Rendering…" : "Preview config"}
           </button>
-          <button className="btn btn--primary" onClick={() => deploy()} disabled={deploying}>
-            {deploying ? "Deploying…" : "Deploy now"}
-          </button>
+          {canWrite && (
+            <button className="btn btn--primary" onClick={() => deploy()} disabled={deploying}>
+              {deploying ? "Deploying…" : "Deploy now"}
+            </button>
+          )}
         </div>
       </header>
 

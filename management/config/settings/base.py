@@ -136,6 +136,10 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     # These need request.user, so they follow authentication.
     "apps.security.middleware.SessionSecurityMiddleware",
+    # Before the second-factor check. Both can be pending on a new
+    # account, and the password is the one the admin who created it
+    # already knows.
+    "apps.security.middleware.RequirePasswordChangeMiddleware",
     "apps.security.middleware.RequireTotpMiddleware",
     "apps.security.middleware.AuditMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
@@ -252,8 +256,12 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",
     ],
+    # Role-aware by default, so an endpoint added later is covered by what
+    # its method implies -- a read needs a viewer, a write needs an operator --
+    # rather than being open to anyone signed in because nobody restricted it.
+    # A view that needs something else sets `required_role`.
     "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.IsAuthenticated",
+        "apps.security.roles.RolePermission",
     ],
     "EXCEPTION_HANDLER": "common.exception_handlers.exception_handler",
 }

@@ -10,6 +10,10 @@ export interface User {
   is_superuser?: boolean;
   /** True until an authenticator app is enrolled, when policy requires one. */
   totp_setup_required?: boolean;
+  /** "viewer" | "operator" | "admin", or null when the account holds none. */
+  role?: string | null;
+  /** True until the account replaces the password an admin chose for it. */
+  password_change_required?: boolean;
 }
 
 export interface CertificateSummary {

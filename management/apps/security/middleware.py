@@ -23,6 +23,19 @@ _TOTP_SETUP_EXEMPT = (
     "/metrics",
 )
 
+# Paths reachable while an account is being forced to change its password.
+# Narrower than the list above: this one does not include the whole of
+# /api/v1/auth/, because enrolling a passkey with a password someone else
+# chose would make the forced change pointless -- the passkey would outlive
+# it and sign in on its own.
+_PASSWORD_CHANGE_EXEMPT = (
+    "/api/v1/auth/me/",
+    "/api/v1/auth/csrf/",
+    "/api/v1/auth/logout/",
+    "/api/v1/security/password/",
+    "/metrics",
+)
+
 # Requests worth recording. Reads are not: they are the overwhelming majority
 # of traffic and recording them would bury the changes in noise.
 _AUDITED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -170,6 +183,51 @@ class RequireTotpMiddleware:
                     {
                         "error": "Set up an authenticator app before using the panel.",
                         "totp_setup_required": True,
+                    },
+                    status=403,
+                )
+
+        return self.get_response(request)
+
+
+class RequirePasswordChangeMiddleware:
+    """
+    Hold an account at a password change until it has made one.
+
+    An admin who creates an account chooses its first password, so until the
+    owner replaces it the two of them share it and the audit trail cannot say
+    which of them acted. Enforced on every request rather than at sign-in, for
+    the same reason the second-factor requirement is: a check that runs once
+    is a check that a second session skips.
+
+    Ordered before RequireTotpMiddleware. Both can be pending at once on a new
+    account, and the password is the one the admin already knows.
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        user = getattr(request, "user", None)
+
+        if (
+            user is not None
+            and user.is_authenticated
+            and request.path.startswith("/api/")
+            and not any(
+                request.path.startswith(prefix) for prefix in _PASSWORD_CHANGE_EXEMPT
+            )
+        ):
+            profile = getattr(user, "operator_profile", None)
+            if profile is not None and profile.password_change_required:
+                return JsonResponse(
+                    {
+                        "error": (
+                            "Choose your own password before using the panel. "
+                            "The one you signed in with was set by whoever "
+                            "created this account."
+                        ),
+                        "password_change_required": True,
                     },
                     status=403,
                 )

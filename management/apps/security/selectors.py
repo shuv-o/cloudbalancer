@@ -4,6 +4,7 @@ from datetime import timedelta
 from django.db.models import Count, Q, QuerySet
 from django.utils import timezone
 
+from apps.security.roles import role_of
 from apps.security.models import (
     AccountLock,
     AuditEvent,
@@ -151,6 +152,10 @@ def operator_list() -> list[dict]:
             "username": user.get_username(),
             "email": user.email,
             "is_superuser": user.is_superuser,
+            # None means the account holds no role and is refused everything.
+            # Shown rather than hidden: it is the state a shell-created
+            # account lands in, and it needs an admin to notice.
+            "role": role_of(user),
             "is_active": user.is_active,
             "last_login": user.last_login,
             "has_second_factor": user.pk in devices,
@@ -158,5 +163,9 @@ def operator_list() -> list[dict]:
                 devices[user.pk].recovery_codes_remaining if user.pk in devices else 0
             ),
         }
-        for user in User.objects.filter(is_staff=True).order_by("username")
+        for user in (
+            User.objects.filter(is_staff=True)
+            .select_related("operator_profile")
+            .order_by("username")
+        )
     ]

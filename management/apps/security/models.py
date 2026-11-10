@@ -22,6 +22,8 @@ from django.core.cache import cache
 from django.db import models
 from django.utils import timezone
 
+from apps.security.roles import Role
+
 
 class PanelAccessPolicy(models.Model):
     """
@@ -543,3 +545,54 @@ class Passkey(models.Model):
 
     def __str__(self) -> str:
         return f"{self.label} ({self.user})"
+
+
+class OperatorProfile(models.Model):
+    """
+    What an account is allowed to do, and whether it must change its password.
+
+    Separate from the Django user rather than added to it, because this
+    installation uses the stock User model and a custom one cannot be
+    introduced after the fact without rewriting every foreign key that already
+    points at it.
+
+    `is_superuser` still wins. It is what `createsuperuser` sets and what the
+    shell reaches for, so it stays the way back in when everything here is
+    wrong.
+    """
+
+    user = models.OneToOneField(
+        "auth.User",
+        on_delete=models.CASCADE,
+        related_name="operator_profile",
+    )
+    role = models.CharField(
+        max_length=16,
+        choices=Role.choices,
+        default=Role.VIEWER,
+        help_text="What this account may change. A superuser is always an admin.",
+    )
+    password_change_required = models.BooleanField(
+        default=False,
+        help_text=(
+            "Force a new password at the next sign-in. Set when an admin "
+            "creates the account, because the admin chose that first password "
+            "and therefore knows it."
+        ),
+    )
+
+    created_by = models.ForeignKey(
+        "auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="operators_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["user__username"]
+
+    def __str__(self) -> str:
+        return f"{self.user.get_username()} ({self.role})"

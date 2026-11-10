@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 import { api } from "../lib/api";
 import { useAction, useResource } from "../lib/hooks";
+import { useCan } from "../lib/session";
 import { Backend, BackendInstance } from "../lib/types";
 import { ms, relativeTime } from "../lib/format";
 import {
@@ -595,6 +596,9 @@ function InstanceForm({
 }
 
 export function Backends() {
+  // Hiding, not protecting: every endpoint behind these
+  // buttons checks the role itself.
+  const canWrite = useCan("operator");
   const { data, initialLoading, reload } = useResource<Backend[]>("/api/v1/backends/", 10000);
   const [addingBackend, setAddingBackend] = useState(false);
   const [editingBackend, setEditingBackend] = useState<Backend | null>(null);
@@ -641,9 +645,11 @@ export function Backends() {
           </p>
         </div>
         <div className="page-actions">
-          <button className="btn btn--primary" onClick={() => setAddingBackend(true)}>
-            Add backend
-          </button>
+          {canWrite && (
+            <button className="btn btn--primary" onClick={() => setAddingBackend(true)}>
+              Add backend
+            </button>
+          )}
         </div>
       </header>
 

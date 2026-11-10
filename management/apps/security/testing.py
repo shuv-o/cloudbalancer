@@ -12,7 +12,8 @@ from django.utils import timezone
 
 import pyotp
 
-from apps.security.models import TotpDevice
+from apps.security.models import OperatorProfile, TotpDevice
+from apps.security.roles import Role
 
 
 def make_operator(
@@ -21,10 +22,29 @@ def make_operator(
     password: str = "correct-horse-battery",
     superuser: bool = True,
     with_second_factor: bool = True,
+    role: str | None = Role.OPERATOR,
+    password_change_required: bool = False,
 ) -> User:
-    """Create an operator, enrolled by default."""
+    """
+    Create an operator, enrolled by default.
+
+    A profile is created unless `role` is None, because that is the state the
+    migration leaves every real account in. Passing role=None gives the other
+    state worth testing: an account that holds no role and is refused
+    everything, which is what a user created straight in the shell gets.
+
+    Superusers get no profile and need none -- role_of() answers ADMIN from
+    the Django flag before it looks for one.
+    """
     factory = User.objects.create_superuser if superuser else User.objects.create_user
     user = factory(username=username, email=f"{username}@example.com", password=password)
+
+    if not superuser and role is not None:
+        OperatorProfile.objects.create(
+            user=user,
+            role=role,
+            password_change_required=password_change_required,
+        )
 
     if with_second_factor:
         TotpDevice.objects.create(

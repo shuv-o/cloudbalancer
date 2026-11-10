@@ -1,7 +1,7 @@
-import { FormEvent, useEffect, useState } from "react";
-import { api } from "../lib/api";
+import { FormEvent, useState } from "react";
+import { ApiError, api } from "../lib/api";
 import { useAction, useResource } from "../lib/hooks";
-import { Domain } from "../lib/types";
+import { Domain, User } from "../lib/types";
 import { dateTime, relativeTime } from "../lib/format";
 import {
   Advanced,
@@ -18,7 +18,6 @@ import {
   useToast,
 } from "../components/ui";
 import * as validate from "../lib/validate";
-import * as webauthn from "../lib/webauthn";
 
 interface Policy {
   panel_domain: string;
@@ -58,9 +57,18 @@ interface Operator {
   username: string;
   email: string;
   is_superuser: boolean;
+  is_active: boolean;
+  /** null means the account holds no role and is refused everything. */
+  role: string | null;
   last_login: string | null;
   has_second_factor: boolean;
   recovery_codes_remaining: number;
+}
+
+interface RoleOption {
+  value: string;
+  label: string;
+  description: string;
 }
 
 interface AuditEvent {
@@ -794,14 +802,6 @@ function BlockForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => v
 }
 
 
-type Passkey = {
-  id: number;
-  label: string;
-  is_backed_up: boolean;
-  transports: string[];
-  created_at: string;
-  last_used_at: string | null;
-};
 
 /**
  * Enrolling and removing passkeys.
@@ -811,176 +811,147 @@ type Passkey = {
  * credential to. Saying "unavailable" for both would leave an operator with
  * nothing to act on.
  */
-function PasskeysPanel() {
-  const { data, reload } = useResource<{ available: boolean; passkeys: Passkey[] }>(
-    "/api/v1/security/passkeys/",
-  );
-  const [busy, setBusy] = useState(false);
-  const [options, setOptions] = useState<Record<string, unknown> | null>(null);
-  const [platform, setPlatform] = useState<boolean | null>(null);
-  const [nonce, setNonce] = useState(0);
+/**
+ * Adding an operator.
+ *
+ * The password field is here, and deliberately so: there is no mail server in
+ * this stack to send an invitation through, so the alternative is the shell,
+ * which is where this lived before. The admin choosing it is why the account
+ * is then held at a password change -- until the owner replaces it, the two
+ * of them share it and the audit trail cannot say which one acted.
+ */
+function AddOperator({
+  roles,
+  onAdded,
+}: {
+  roles: RoleOption[];
+  onAdded: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState({
+    username: "",
+    email: "",
+    password: "",
+    role: "viewer",
+  });
+  const [error, setError] = useState<ApiError | null>(null);
   const toast = useToast();
 
-  const browserReason = webauthn.unavailableReason();
-  const keys = data?.passkeys ?? [];
-  const ready = !!data?.available && !browserReason;
-
-  useEffect(() => {
-    if (webauthn.supported()) {
-      webauthn.platformAuthenticatorAvailable().then(setPlatform);
-    }
-  }, []);
-
-  // The challenge is fetched before the button is pressed, not after.
-  //
-  // navigator.credentials.create() needs the user gesture that started it, and
-  // Safari drops that activation across an awaited network request. Asking the
-  // server for options inside the click handler therefore fails there with
-  // NotAllowedError -- the same error the browser gives for a dismissed
-  // prompt, which is why it reads as though nobody touched anything.
-  //
-  // One effect and one request. The server holds a single challenge per
-  // session, so two of these in flight would leave the browser carrying one
-  // challenge while the server waited for the other -- a failure that would
-  // land on the enrolment after this one, not this one.
-  useEffect(() => {
-    if (!ready) {
-      setOptions(null);
-      return;
-    }
-
-    let ignore = false;
-    api
-      .post<Record<string, unknown>>("/api/v1/auth/passkey/register/options/", {})
-      .then((fetched) => {
-        if (!ignore) setOptions(fetched);
-      })
-      .catch(() => {
-        if (!ignore) setOptions(null);
-      });
-
-    return () => {
-      ignore = true;
-    };
-  }, [ready, nonce]);
-
-  async function enrol() {
-    if (!options) return;
-    setBusy(true);
-
+  const [submit, { busy }] = useAction(async () => {
+    setError(null);
     try {
-      // First await in the handler, so the gesture is still live.
-      const credential = await webauthn.create(options);
-
-      // Named afterwards. A modal prompt() beforehand also discards the
-      // activation, and by here the ceremony is already done.
-      const label =
-        window.prompt("What should this device be called?", "This device")?.trim() ||
-        "This device";
-
-      await api.post("/api/v1/auth/passkey/register/verify/", { credential, label });
-      toast(`${label} can now sign you in.`);
-      reload();
+      await api.post("/api/v1/security/operators/", draft);
+      toast(`${draft.username} can sign in now, and must choose a new password.`);
+      setDraft({ username: "", email: "", password: "", role: "viewer" });
+      setOpen(false);
+      onAdded();
     } catch (err) {
-      // Keep the exception. Everything below turns it into a sentence an
-      // operator can read, and that sentence is deliberately vague about which
-      // of several causes applied -- so the raw name and message are the only
-      // thing left to diagnose a device that will not enrol.
-      console.error("[passkey] enrolment failed", err);
-      const apiError = err as { status?: number; message?: string };
-      toast(apiError.status ? apiError.message! : webauthn.describe(err), "error");
-    } finally {
-      // Used or not, that challenge is spent. Get another.
-      setOptions(null);
-      setNonce((n) => n + 1);
-      setBusy(false);
+      setError(err as ApiError);
     }
-  }
+  });
 
-  async function remove(key: Passkey) {
-    if (keys.length === 1) {
-      const sure = window.confirm(
-        `${key.label} is your only passkey. Remove it and you will sign in with your password and authenticator code instead. Continue?`,
-      );
-      if (!sure) return;
-    }
-    await api.delete(`/api/v1/security/passkeys/${key.id}/`);
-    toast(`${key.label} removed.`);
-    reload();
-    // The options in hand still exclude the credential just removed, so the
-    // device that held it would be refused if it enrolled again.
-    setNonce((n) => n + 1);
-  }
+  const chosen = roles.find((r) => r.value === draft.role);
 
   return (
-    <Panel title="Passkeys" flush>
-      <div className="panel__body">
-        <Outcome>
-          {keys.length === 0
-            ? "You sign in with a password and an authenticator code. A passkey replaces both with your device's fingerprint, face or PIN — and cannot be phished, because the signature only works on this panel's own address."
-            : `${keys.length === 1 ? "One passkey signs" : `${keys.length} passkeys sign`} you in without a password or a code. Your password still works as a fallback.`}
-        </Outcome>
+    <>
+      <button className="btn btn--small" onClick={() => setOpen(true)}>
+        Add operator
+      </button>
 
-        {!data?.available && !browserReason && (
-          <Notice tone="warn">
-            Passkeys need the panel published at a hostname of its own. A passkey is
-            bound to a domain name and an IP address cannot be one, so enrolment is
-            held until you publish it above.
-          </Notice>
-        )}
-        {browserReason && <Notice tone="warn">{browserReason}</Notice>}
-      </div>
-
-      {keys.length > 0 && (
-        <div className="rows">
-          {keys.map((key) => (
-            <Row key={key.id} state="healthy" columns="minmax(0,1fr) auto auto">
-              <div>
-                <div className="row__primary">{key.label}</div>
-                <div className="row__secondary">
-                  {key.last_used_at
-                    ? `last used ${relativeTime(key.last_used_at)}`
-                    : "never used"}
-                  {` · added ${relativeTime(key.created_at)}`}
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: 6 }}>
-                <Tag tone={key.is_backed_up ? "hit" : "signal"}>
-                  {key.is_backed_up ? "synced" : "this device only"}
-                </Tag>
-              </div>
-              <div className="row__actions">
-                <button className="btn btn--small" onClick={() => remove(key)}>
-                  Remove
-                </button>
-              </div>
-            </Row>
-          ))}
-        </div>
-      )}
-
-      <div className="panel__body">
-        <button
-          className="btn btn--primary"
-          disabled={busy || !ready || !options}
-          onClick={enrol}
+      {open && (
+        <Modal
+          title="Add an operator"
+          onClose={() => setOpen(false)}
+          footer={
+            <>
+              <button className="btn" onClick={() => setOpen(false)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn--primary"
+                form="add-operator"
+                disabled={busy || !draft.username || !draft.password}
+              >
+                {busy ? "Adding…" : "Add operator"}
+              </button>
+            </>
+          }
         >
-          {busy ? "Waiting for your device…" : "Add a passkey"}
-        </button>
+          <form
+            id="add-operator"
+            onSubmit={(e) => {
+              e.preventDefault();
+              submit();
+            }}
+          >
+            {error && (
+              <div className="notice notice--error" style={{ marginBottom: 14 }}>
+                {error.message}
+              </div>
+            )}
 
-        {ready && platform === false && (
-          <p className="field__help" style={{ marginTop: 8 }}>
-            This device has no built-in fingerprint, face or PIN unlock that the
-            panel can use. You can still enrol a security key, or a phone, from the
-            prompt — or set up a screen lock here first.
-          </p>
-        )}
-      </div>
-    </Panel>
+            <Field label="Username">
+              <input
+                className="input"
+                value={draft.username}
+                autoFocus
+                onChange={(e) => setDraft({ ...draft, username: e.target.value })}
+                required
+              />
+            </Field>
+
+            <Field label="Email" help="Optional. Used only to identify the account.">
+              <input
+                className="input"
+                type="email"
+                value={draft.email}
+                onChange={(e) => setDraft({ ...draft, email: e.target.value })}
+              />
+            </Field>
+
+            <Field
+              label="First password"
+              help="Pass this on however you normally would. They must replace it before the panel will do anything else."
+            >
+              <input
+                className="input"
+                type="password"
+                value={draft.password}
+                autoComplete="new-password"
+                onChange={(e) => setDraft({ ...draft, password: e.target.value })}
+                required
+              />
+            </Field>
+
+            <Field label="Role" help={chosen?.description}>
+              <select
+                className="select"
+                value={draft.role}
+                onChange={(e) => setDraft({ ...draft, role: e.target.value })}
+              >
+                {roles.map((role) => (
+                  <option key={role.value} value={role.value}>
+                    {role.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            <Notice tone="warn">
+              They will also be asked to set up an authenticator app at first
+              sign-in, before the panel will show them anything.
+            </Notice>
+          </form>
+        </Modal>
+      )}
+    </>
   );
 }
 
-export function Security() {
+export function Security({ user }: { user: User }) {
+  // Nobody may change their own role or switch themselves off: demotion
+  // has no undo, and deactivation locks you out the same instant.
+  const me = user;
   const { data: policy, reload: reloadPolicy } = useResource<Policy>(
     "/api/v1/security/policy/",
   );
@@ -988,6 +959,7 @@ export function Security() {
     "/api/v1/security/summary/",
     20000,
   );
+  const { data: roles } = useResource<{ roles: RoleOption[] }>("/api/v1/security/roles/");
   const { data: operators, reload: reloadOperators } = useResource<{ operators: Operator[] }>(
     "/api/v1/security/operators/",
   );
@@ -1027,6 +999,29 @@ export function Security() {
   const [resetFactor] = useAction(async (operator: Operator) => {
     await api.post("/api/v1/security/totp/reset/", { user_id: operator.id });
     toast(`${operator.username} will set up a new authenticator at next sign-in.`);
+    reloadOperators();
+  });
+
+  const [changeRole] = useAction(async (operator: Operator, role: string) => {
+    if (!role) return;
+    await api.patch(`/api/v1/security/operators/${operator.id}/`, { role });
+    toast(`${operator.username} is now ${role === "admin" ? "an" : "a"} ${role}.`);
+    reloadOperators();
+  });
+
+  const [setActive] = useAction(async (operator: Operator, is_active: boolean) => {
+    if (!is_active) {
+      const sure = window.confirm(
+        `Switch off ${operator.username}? Their session ends immediately and they cannot sign in again until you switch them back on.`,
+      );
+      if (!sure) return;
+    }
+    await api.patch(`/api/v1/security/operators/${operator.id}/`, { is_active });
+    toast(
+      is_active
+        ? `${operator.username} can sign in again.`
+        : `${operator.username} is switched off.`,
+    );
     reloadOperators();
   });
 
@@ -1213,7 +1208,14 @@ export function Security() {
       </div>
 
       <div className="grid grid--2" style={{ marginBottom: 16 }}>
-        <Panel title="Operators" flush>
+        <Panel
+          title="Operators"
+          hint="A viewer reads the panel. An operator changes traffic. An admin changes both, and who else gets in."
+          actions={
+            <AddOperator roles={roles?.roles ?? []} onAdded={reloadOperators} />
+          }
+          flush
+        >
           <div className="rows">
             {(operators?.operators ?? []).map((operator) => (
               <Row
@@ -1233,11 +1235,35 @@ export function Security() {
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
                   {operator.is_superuser && <Tag tone="signal">superuser</Tag>}
+                  {!operator.is_active && <Tag tone="down">switched off</Tag>}
+                  <Tag tone={operator.role ? "hit" : "down"}>
+                    {operator.role ?? "no role"}
+                  </Tag>
                   <Tag tone={operator.has_second_factor ? "hit" : "warn"}>
                     {operator.has_second_factor ? "2FA on" : "no 2FA"}
                   </Tag>
                 </div>
                 <div className="row__actions">
+                  {/*
+                    A superuser's role is fixed, and nobody may change their
+                    own — demoting yourself has no undo, and switching
+                    yourself off locks you out the same instant.
+                  */}
+                  {!operator.is_superuser && operator.id !== me?.id && (
+                    <select
+                      className="select select--compact"
+                      value={operator.role ?? ""}
+                      onChange={(e) => changeRole(operator, e.target.value)}
+                      aria-label={`Role for ${operator.username}`}
+                    >
+                      {!operator.role && <option value="">no role</option>}
+                      {(roles?.roles ?? []).map((role) => (
+                        <option key={role.value} value={role.value}>
+                          {role.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                   {operator.has_second_factor && (
                     <button
                       className="btn btn--small"
@@ -1247,13 +1273,25 @@ export function Security() {
                       Reset 2FA
                     </button>
                   )}
+                  {!operator.is_superuser && operator.id !== me?.id && (
+                    <button
+                      className="btn btn--small"
+                      onClick={() => setActive(operator, !operator.is_active)}
+                      title={
+                        operator.is_active
+                          ? "Ends their session immediately."
+                          : "They can sign in again."
+                      }
+                    >
+                      {operator.is_active ? "Switch off" : "Switch on"}
+                    </button>
+                  )}
                 </div>
               </Row>
             ))}
           </div>
         </Panel>
 
-        <PasskeysPanel />
       </div>
 
       <div className="grid grid--2" style={{ marginBottom: 16 }}>

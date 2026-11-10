@@ -2,6 +2,7 @@ import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAction, useResource } from "../lib/hooks";
+import { useCan } from "../lib/session";
 import { Domain } from "../lib/types";
 import { expiryPhrase, relativeTime } from "../lib/format";
 import {
@@ -147,6 +148,9 @@ function DomainForm({
 }
 
 export function Domains() {
+  // Hiding, not protecting: every endpoint behind these
+  // buttons checks the role itself.
+  const canWrite = useCan("operator");
   const { data, initialLoading, reload } = useResource<Domain[]>("/api/v1/domains/", 15000);
   const [editing, setEditing] = useState<Domain | null>(null);
   const [adding, setAdding] = useState(false);
@@ -175,9 +179,11 @@ export function Domains() {
           </p>
         </div>
         <div className="page-actions">
-          <button className="btn btn--primary" onClick={() => setAdding(true)}>
-            Add domain
-          </button>
+          {canWrite && (
+            <button className="btn btn--primary" onClick={() => setAdding(true)}>
+              Add domain
+            </button>
+          )}
         </div>
       </header>
 

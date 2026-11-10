@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useAction, useResource } from "../lib/hooks";
 import { Domain } from "../lib/types";
@@ -818,6 +818,7 @@ function PasskeysPanel() {
   const [busy, setBusy] = useState(false);
   const [options, setOptions] = useState<Record<string, unknown> | null>(null);
   const [platform, setPlatform] = useState<boolean | null>(null);
+  const [nonce, setNonce] = useState(0);
   const toast = useToast();
 
   const browserReason = webauthn.unavailableReason();
@@ -837,15 +838,31 @@ function PasskeysPanel() {
   // server for options inside the click handler therefore fails there with
   // NotAllowedError -- the same error the browser gives for a dismissed
   // prompt, which is why it reads as though nobody touched anything.
-  const fetchOptions = useCallback(() => {
-    if (!ready) return;
+  //
+  // One effect and one request. The server holds a single challenge per
+  // session, so two of these in flight would leave the browser carrying one
+  // challenge while the server waited for the other -- a failure that would
+  // land on the enrolment after this one, not this one.
+  useEffect(() => {
+    if (!ready) {
+      setOptions(null);
+      return;
+    }
+
+    let ignore = false;
     api
       .post<Record<string, unknown>>("/api/v1/auth/passkey/register/options/", {})
-      .then(setOptions)
-      .catch(() => setOptions(null));
-  }, [ready]);
+      .then((fetched) => {
+        if (!ignore) setOptions(fetched);
+      })
+      .catch(() => {
+        if (!ignore) setOptions(null);
+      });
 
-  useEffect(fetchOptions, [fetchOptions, keys.length]);
+    return () => {
+      ignore = true;
+    };
+  }, [ready, nonce]);
 
   async function enrol() {
     if (!options) return;
@@ -865,11 +882,17 @@ function PasskeysPanel() {
       toast(`${label} can now sign you in.`);
       reload();
     } catch (err) {
+      // Keep the exception. Everything below turns it into a sentence an
+      // operator can read, and that sentence is deliberately vague about which
+      // of several causes applied -- so the raw name and message are the only
+      // thing left to diagnose a device that will not enrol.
+      console.error("[passkey] enrolment failed", err);
       const apiError = err as { status?: number; message?: string };
       toast(apiError.status ? apiError.message! : webauthn.describe(err), "error");
     } finally {
       // Used or not, that challenge is spent. Get another.
-      fetchOptions();
+      setOptions(null);
+      setNonce((n) => n + 1);
       setBusy(false);
     }
   }
@@ -884,6 +907,9 @@ function PasskeysPanel() {
     await api.delete(`/api/v1/security/passkeys/${key.id}/`);
     toast(`${key.label} removed.`);
     reload();
+    // The options in hand still exclude the credential just removed, so the
+    // device that held it would be refused if it enrolled again.
+    setNonce((n) => n + 1);
   }
 
   return (

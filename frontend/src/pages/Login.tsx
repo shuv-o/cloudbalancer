@@ -67,7 +67,9 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
       onSignedIn({ ...user, authenticated: true });
     } catch (err) {
       // A ceremony the person dismissed is not an error worth shouting about,
-      // and the browser reports it the same way it reports a timeout.
+      // and the browser reports it the same way it reports a timeout. The
+      // exception itself is kept, because the message shown cannot say which.
+      console.error("[passkey] sign-in failed", err);
       const apiError = err as ApiError;
       setLocked(apiError.status === 429);
       setError(

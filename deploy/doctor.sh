@@ -94,6 +94,52 @@ printf '  panel      %s\n' "$(curl -s -o /dev/null -w '%{http_code}' --max-time 
 printf '  panel api  %s\n' "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:8081/api/v1/auth/me/ || echo unreachable)"
 printf '  gateway    %s\n' "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost/health || echo unreachable)"
 
+hr "Exposure"
+# `docker compose ps` lists published ports as a fact. It does not say whether
+# an admin surface ended up on a public interface -- and that is the one
+# mistake here that cannot be taken back once somebody has found it. So this
+# section judges rather than prints.
+published=$(docker compose ps --format '{{.Service}}|{{.Ports}}' 2>/dev/null)
+public_admin=0
+
+check_surface() {
+    local service=$1 port=$2 label=$3 line
+    line=$(printf '%s\n' "$published" | grep "^${service}|")
+
+    if printf '%s' "$line" | grep -qE "(0\.0\.0\.0|\[::\]):${port}->"; then
+        no "${label} is published on every interface (:${port})"
+        public_admin=1
+    elif printf '%s' "$line" | grep -qE ":${port}->"; then
+        ok "${label} is bound to one address (:${port})"
+    else
+        ok "${label} is not published (:${port})"
+    fi
+}
+
+check_surface nginx      8081 "control panel"
+check_surface grafana    3000 "Grafana"
+check_surface prometheus 9090 "Prometheus"
+
+if [[ $public_admin -eq 1 ]]; then
+    # A session cookie without Secure travels over any plain-HTTP request to
+    # the same host. On a loopback-only panel that is contained. On a public
+    # one it is the entire authentication story crossing the network in clear.
+    cookie=$(docker compose exec -T django python -c "
+import django; django.setup()
+from django.conf import settings
+print(settings.SESSION_COOKIE_SECURE)" 2>/dev/null | tr -d '\r' | tail -1)
+    [[ "$cookie" == "False" ]] && \
+        no "the session cookie is not marked Secure, so it crosses that interface in clear text"
+
+    printf '\n  \033[31mAn admin surface answers anyone who can route to this host.\033[0m\n'
+    printf '  Close it   set PANEL_BIND=127.0.0.1 and OBSERVABILITY_BIND=127.0.0.1 in .env,\n'
+    printf '             then: docker compose up -d\n'
+    printf '  Reach it   ssh -L 8081:localhost:8081 <user>@<this host>, then http://localhost:8081\n'
+    printf '  Or keep remote access properly: give the panel a hostname and a\n'
+    printf '  certificate under Security -> Publish the panel, which serves it over\n'
+    printf '  TLS on 443 with HSTS, a CSP, rate limits and an optional allowlist.\n'
+fi
+
 hr "Published ports"
 docker compose ps --format '{{.Service}} {{.Ports}}' 2>/dev/null | grep -E '0.0.0.0|127.0.0.1|:::' | sed 's/^/  /'
 

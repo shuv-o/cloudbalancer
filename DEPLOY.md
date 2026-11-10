@@ -133,6 +133,10 @@ Docker writes its own iptables rules for a published port, below where ufw
 operates. Bind to a specific private address rather than relying on the
 firewall to contain a wildcard.
 
+`make doctor` reports this under **Exposure**: it reads the ports Docker has
+actually published rather than what `.env` says, so a stale container or a
+hand-run `docker run` shows up too.
+
 **There is no HTTPS on 8081.** That listener is plain HTTP by design, because
 its intended use is a tunnel. If you want the panel reachable from anywhere
 with a password that is not sent in the clear, give it a hostname and a
@@ -176,6 +180,8 @@ grep -E 'DEBUG|SECRET_KEY|ALLOWED_HOSTS|PASSWORD|BIND' .env
 - [ ] `DJANGO_ALLOWED_HOSTS` lists your real hostnames, not `*`
 - [ ] `POSTGRES_PASSWORD` and `GF_SECURITY_ADMIN_PASSWORD` changed
 - [ ] `PANEL_BIND` and `OBSERVABILITY_BIND` still `127.0.0.1`, or a private address
+      — `make doctor` checks this one against the ports actually published,
+      which is the only version of it that stays true after someone edits `.env`
 - [ ] `ACME_STAGING=false` once issuance is proven
 - [ ] Ports 80 and 443 open; 8081, 3000 and 9090 not
 - [ ] `make check` passes

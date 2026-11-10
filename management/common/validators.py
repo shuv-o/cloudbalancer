@@ -124,3 +124,23 @@ def validate_header_value(value: str, *, label: str = "header value") -> None:
             f"A {label} may not contain control characters such as newlines "
             "or tabs."
         )
+
+
+def validate_range(value, *, low: int, high: int, label: str, unit: str = "") -> None:
+    """
+    Bound a numeric setting.
+
+    These are not arbitrary tidiness. A rate limit of 0 renders `rate=0r/s`,
+    which Nginx refuses, so the whole deploy fails -- every domain, not just
+    the route that was edited. A negative TTL and a port above 65535 fail the
+    same way. Catching them on save keeps one bad edit from taking the gateway
+    down with it.
+    """
+    if value is None:
+        raise ValidationError(f"A {label} is required.")
+    suffix = f" {unit}" if unit else ""
+    if value < low or value > high:
+        raise ValidationError(
+            f"{label.capitalize()} must be between {low}{suffix} and "
+            f"{high}{suffix}; got {value}{suffix}."
+        )

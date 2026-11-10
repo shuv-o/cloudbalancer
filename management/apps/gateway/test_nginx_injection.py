@@ -209,3 +209,92 @@ class BareDirectiveTests(TestCase):
             match_value=r"^/v\d{1,2}/",
         )
         self.assertIn("{1,2}", rule.match_value)
+
+
+class NumericBoundsTests(TestCase):
+    """
+    A value Nginx refuses fails the deploy of every domain, not just the route
+    that was edited. These are caught on save instead.
+    """
+
+    def setUp(self):
+        self.backend = backend_create(name="svc")
+        instance_add(backend=self.backend, address="10.0.1.1", port=8080)
+        self.domain = domain_create(name="nums.example.com")
+
+    def test_a_rate_limit_of_zero_is_refused(self):
+        """`rate=0r/s` is rejected by Nginx and takes the whole config down."""
+        with self.assertRaises(ValidationError):
+            rule_create(
+                domain_id=self.domain.id,
+                backend_id=self.backend.id,
+                match_value="/",
+                rate_limit_enabled=True,
+                rate_limit_rps=0,
+            )
+
+    def test_a_negative_cache_ttl_is_refused(self):
+        with self.assertRaises(ValidationError):
+            rule_create(
+                domain_id=self.domain.id,
+                backend_id=self.backend.id,
+                match_value="/",
+                cache_ttl=-1,
+            )
+
+    def test_a_port_outside_the_range_is_refused(self):
+        for port in [0, 70000, -1]:
+            with self.subTest(port=port), self.assertRaises(ValidationError):
+                instance_add(backend=self.backend, address="10.0.2.1", port=port)
+
+    def test_a_health_timeout_must_fit_inside_its_interval(self):
+        """Overlapping probes queue up behind each other."""
+        with self.assertRaises(ValidationError) as caught:
+            backend_create(
+                name="slow", health_check_interval=5, health_check_timeout=10
+            )
+        self.assertIn("health_check_timeout", caught.exception.message_dict)
+
+    def test_ordinary_values_still_pass(self):
+        rule = rule_create(
+            domain_id=self.domain.id,
+            backend_id=self.backend.id,
+            match_value="/",
+            cache_ttl=600,
+            rate_limit_enabled=True,
+            rate_limit_rps=50,
+            rate_limit_burst=100,
+        )
+        self.assertEqual(rule.rate_limit_rps, 50)
+
+
+class ValidationReachesTheOperatorTests(TestCase):
+    """
+    A refused save must say why.
+
+    Model validation raises Django's ValidationError, which DRF's default
+    handler does not recognise -- it would escape as a 500 and the operator
+    would see a refused save with no reason attached.
+    """
+
+    def test_a_model_error_becomes_a_400_with_its_message(self):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        from common.exception_handlers import exception_handler
+
+        exc = DjangoValidationError({"port": ["Port 443 is a TLS port."]})
+        response = exception_handler(exc, {})
+
+        self.assertIsNotNone(response, "the exception would have become a 500")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("port", response.data)
+        self.assertIn("TLS port", str(response.data["port"]))
+
+    def test_a_non_field_error_survives_too(self):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        from common.exception_handlers import exception_handler
+
+        response = exception_handler(DjangoValidationError("Nope."), {})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Nope.", str(response.data))

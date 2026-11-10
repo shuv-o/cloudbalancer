@@ -8,7 +8,7 @@ of that service at a specific host:port.
 from django.core.exceptions import ValidationError
 from django.db import models
 
-from common.validators import validate_identifier
+from common.validators import validate_identifier, validate_range
 
 
 # A port whose meaning is fixed by convention, paired with the wrong scheme, is
@@ -171,6 +171,34 @@ class Backend(models.Model):
         super().clean()
         # The name becomes an upstream block name, which cannot be quoted.
         validate_identifier(self.name, label="backend name")
+        validate_range(
+            self.keepalive_connections, low=0, high=10000,
+            label="keepalive connections",
+        )
+        validate_range(
+            self.health_check_interval, low=1, high=86400,
+            label="health check interval", unit="s",
+        )
+        validate_range(
+            self.health_check_timeout, low=1, high=300,
+            label="health check timeout", unit="s",
+        )
+        if self.health_check_timeout >= self.health_check_interval:
+            raise ValidationError({
+                "health_check_timeout": (
+                    f"A {self.health_check_timeout}s timeout does not fit in a "
+                    f"{self.health_check_interval}s interval -- probes would "
+                    "overlap and queue. Shorten the timeout or lengthen the "
+                    "interval."
+                )
+            })
+        validate_range(
+            self.unhealthy_threshold, low=1, high=100,
+            label="unhealthy threshold",
+        )
+        validate_range(
+            self.healthy_threshold, low=1, high=100, label="healthy threshold"
+        )
         if self.pk is None:
             return
         for instance in self.instances.all():
@@ -269,6 +297,12 @@ class BackendInstance(models.Model):
     def clean(self):
         """Reject a port that contradicts the backend's scheme."""
         super().clean()
+        validate_range(self.port, low=1, high=65535, label="port")
+        validate_range(self.weight, low=1, high=1000, label="weight")
+        validate_range(self.max_fails, low=0, high=1000, label="max fails")
+        validate_range(
+            self.fail_timeout, low=1, high=86400, label="fail timeout", unit="s"
+        )
         if self.backend_id is None:
             return
         message = scheme_port_conflict(self.backend.scheme, self.port)

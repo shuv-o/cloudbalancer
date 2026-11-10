@@ -9,6 +9,7 @@ from django.db import models
 
 from common.validators import (
     validate_header_name,
+    validate_range,
     validate_header_value,
     validate_match_value,
 )
@@ -179,6 +180,22 @@ class RoutingRule(models.Model):
             validate_header_value(value, label=f"value for '{name}'")
         for name in (self.cache_key_headers or []):
             validate_header_name(name)
+        validate_range(self.cache_ttl, low=0, high=31536000, label="cache TTL", unit="s")
+        validate_range(self.cache_min_uses, low=1, high=10000, label="cache min uses")
+        validate_range(
+            self.proxy_read_timeout, low=1, high=86400,
+            label="proxy read timeout", unit="s",
+        )
+        if self.rate_limit_enabled:
+            # rate=0r/s is refused by Nginx, which fails the deploy of every
+            # domain rather than just this route.
+            validate_range(
+                self.rate_limit_rps, low=1, high=1000000,
+                label="rate limit", unit="r/s",
+            )
+            validate_range(
+                self.rate_limit_burst, low=0, high=1000000, label="rate limit burst"
+            )
 
     @property
     def nginx_location(self) -> str:

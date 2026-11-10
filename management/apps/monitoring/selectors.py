@@ -305,7 +305,13 @@ SERIES_RANGES = (
 # A label value is interpolated into PromQL, so it is checked rather than
 # escaped. Nothing that is not a hostname gets through, which leaves no quote
 # or brace to close the selector with.
-HOSTNAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$")
+#
+# The leading `*.` is allowed because a wildcard is a real Domain here, and the
+# traffic module labels its zone with the literal server_name -- so `*` is what
+# Prometheus holds and what an exact match has to ask for. It is safe in a
+# label value: `=` is equality, not a pattern, and a value cannot contain a
+# quote or a brace to escape the selector with.
+HOSTNAME = re.compile(r"^(?:\*\.)?[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$")
 UPSTREAM_NAME = re.compile(r"^[A-Za-z0-9_]+$")
 
 

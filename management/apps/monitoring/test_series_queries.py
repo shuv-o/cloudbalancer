@@ -364,3 +364,43 @@ class RangeClampTests(TestCase):
     def test_a_nonsensical_range_becomes_the_shortest_real_one(self):
         self.assertEqual(self.series(minutes=0)["range_minutes"], 1)
         self.assertEqual(self.series(minutes=-5)["range_minutes"], 1)
+
+
+class WildcardDomainTests(TestCase):
+    """
+    A wildcard is a Domain like any other, and has to be chartable like one.
+
+    Nginx matches *.example.com in server_name, and the traffic module labels
+    the zone with the literal server_name -- so `*.example.com` is what
+    Prometheus holds, and an exact match has to ask for it with the star
+    intact.
+    """
+
+    def setUp(self):
+        self.domain = domain_create(name="*.example.com")
+        self.backend = backend_create(name="catch-all")
+        instance_add(backend=self.backend, address="10.0.0.4", port=8080)
+        rule_create(domain_id=self.domain.pk, backend_id=self.backend.pk)
+
+    def test_a_wildcard_can_be_charted(self):
+        for query in collected_queries(host="*.example.com"):
+            if "nginx_vts_server_" not in query:
+                continue
+            with self.subTest(query=query):
+                self.assertIn('host="*.example.com"', query)
+
+    def test_the_star_does_not_reach_an_nginx_symbol(self):
+        self.assertNotIn("*", self.domain.slug)
+
+    def test_a_wildcard_slug_cannot_collide_with_a_real_domain(self):
+        literal = domain_create(name="wildcard.example.com")
+        self.assertNotEqual(self.domain.slug, literal.slug)
+
+    def test_a_star_anywhere_but_the_front_is_still_refused(self):
+        for attempt in ("*", "*.", "*x.example.com", "a.*.com"):
+            with self.subTest(attempt=attempt):
+                with mock.patch.object(
+                    selectors, "_prometheus_range", return_value=[]
+                ):
+                    with self.assertRaises(selectors.SeriesFilterError):
+                        selectors.traffic_series(host=attempt)

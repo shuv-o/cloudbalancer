@@ -69,5 +69,23 @@ class Domain(models.Model):
 
     @property
     def slug(self) -> str:
-        """An identifier safe to embed in generated Nginx symbol names."""
-        return self.name.replace(".", "_").replace("-", "_")
+        """
+        An identifier safe to embed in generated Nginx symbol names.
+
+        The `*` of a wildcard becomes a word. Nginx does tolerate it inside a
+        shared-zone name, since the name is only a token to it, but a symbol
+        with a glob character in it is a trap for anything that later reads the
+        config back.
+
+        It maps to `wildcard_`, so `*.example.com` yields a doubled underscore:
+        wildcard__example_com. That is what keeps it distinct from the real
+        domain wildcard.example.com, which yields wildcard_example_com. A valid
+        hostname cannot produce `__` on its own -- only `.` and `-` become
+        underscores, and neither may sit next to the other or repeat.
+        """
+        return (
+            self.name
+            .replace("*", "wildcard_")
+            .replace(".", "_")
+            .replace("-", "_")
+        )

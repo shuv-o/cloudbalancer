@@ -298,3 +298,40 @@ class ValidationReachesTheOperatorTests(TestCase):
         response = exception_handler(DjangoValidationError("Nope."), {})
         self.assertEqual(response.status_code, 400)
         self.assertIn("Nope.", str(response.data))
+
+
+class ConfigPathTests(TestCase):
+    """Paths are written into directives that nothing quotes."""
+
+    def test_a_cert_path_cannot_end_its_directive(self):
+        with self.assertRaises(ValidationError):
+            domain_create(
+                name="certs.example.com",
+                ssl_cert_path="/etc/ssl/a.pem; return 200 'x'; #",
+            )
+
+    def test_a_cert_path_must_be_absolute(self):
+        with self.assertRaises(ValidationError):
+            domain_create(name="certs.example.com", ssl_cert_path="ssl/a.pem")
+
+    def test_a_cert_path_may_not_climb_out(self):
+        with self.assertRaises(ValidationError):
+            domain_create(
+                name="certs.example.com", ssl_cert_path="/etc/ssl/../../etc/shadow"
+            )
+
+    def test_an_ordinary_path_is_accepted(self):
+        domain = domain_create(
+            name="certs.example.com",
+            ssl_cert_path="/etc/letsencrypt/live/certs.example.com/fullchain.pem",
+        )
+        self.assertTrue(domain.ssl_cert_path.endswith("fullchain.pem"))
+
+    def test_an_sni_name_must_be_a_hostname(self):
+        with self.assertRaises(ValidationError):
+            backend_create(name="edge", tls_server_name="x; return 200 'p';")
+
+    def test_a_blank_sni_name_is_fine(self):
+        """Blank means 'use the request's own host', which is the default."""
+        backend = backend_create(name="edge", tls_server_name="")
+        self.assertEqual(backend.tls_server_name, "")

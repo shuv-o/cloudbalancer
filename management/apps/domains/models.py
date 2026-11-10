@@ -7,7 +7,7 @@ traffic to different backends.
 """
 from django.db import models
 
-from common.validators import validate_hostname
+from common.validators import validate_config_path, validate_hostname
 
 
 class Domain(models.Model):
@@ -64,6 +64,8 @@ class Domain(models.Model):
         """
         super().clean()
         validate_hostname(self.name)
+        validate_config_path(self.ssl_cert_path, label="certificate path")
+        validate_config_path(self.ssl_key_path, label="private key path")
 
     @property
     def slug(self) -> str:

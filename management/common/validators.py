@@ -144,3 +144,37 @@ def validate_range(value, *, low: int, high: int, label: str, unit: str = "") ->
             f"{label.capitalize()} must be between {low}{suffix} and "
             f"{high}{suffix}; got {value}{suffix}."
         )
+
+
+def validate_config_path(value: str, *, label: str = "path") -> None:
+    """
+    A filesystem path written into a directive such as ssl_certificate.
+
+    Nothing quotes it on the way out, so a path containing `;` would end the
+    directive and begin another. Relative segments are refused as well: these
+    paths are resolved by Nginx inside the container, and a `..` in one is
+    either a mistake or an attempt to reach outside the certificate store.
+    """
+    if not value:
+        return
+    if _CONTROL.search(value):
+        raise ValidationError(f"A {label} may not contain control characters.")
+    if _STRUCTURAL.search(value):
+        raise ValidationError(
+            f"A {label} may not contain spaces, ';', '#', '{{' or '}}'. "
+            f"'{value}' cannot be written into the gateway configuration."
+        )
+    if not value.startswith("/"):
+        raise ValidationError(
+            f"A {label} must be absolute, starting with '/'. Nginx resolves it "
+            "inside the gateway container, not from the panel's directory."
+        )
+    if ".." in value.split("/"):
+        raise ValidationError(f"A {label} may not contain '..'.")
+
+
+def validate_sni_name(value: str) -> None:
+    """The hostname sent to a TLS backend, or blank to use the request's own."""
+    if not value:
+        return
+    validate_hostname(value)

@@ -552,6 +552,7 @@ def config_deploy(*, user=None) -> ConfigDeployLog:
         deployed_by=user,
     )
 
+    backup_path = None
     try:
         backup_path = config_backup()
         config_write(configs)
@@ -577,7 +578,15 @@ def config_deploy(*, user=None) -> ConfigDeployLog:
         return log
 
     except Exception as exc:
+        # Nginx is still serving the previous configuration from memory, but
+        # the files on disk may be half-written. The next reload -- a renewal,
+        # a cache purge, a restart -- would load them. Put the old ones back.
         logger.exception("Deploy #%s raised", log.pk)
+        if backup_path is not None:
+            try:
+                config_restore(backup_path)
+            except Exception:
+                logger.exception("Deploy #%s could not restore its backup", log.pk)
         return _fail(log, str(exc))
 
 

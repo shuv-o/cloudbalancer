@@ -8,7 +8,12 @@ of that service at a specific host:port.
 from django.core.exceptions import ValidationError
 from django.db import models
 
-from common.validators import validate_identifier, validate_range
+from common.validators import (
+    validate_config_path,
+    validate_identifier,
+    validate_range,
+    validate_sni_name,
+)
 
 
 # A port whose meaning is fixed by convention, paired with the wrong scheme, is
@@ -171,6 +176,8 @@ class Backend(models.Model):
         super().clean()
         # The name becomes an upstream block name, which cannot be quoted.
         validate_identifier(self.name, label="backend name")
+        validate_config_path(self.tls_trusted_ca_path, label="CA bundle path")
+        validate_sni_name(self.tls_server_name)
         validate_range(
             self.keepalive_connections, low=0, high=10000,
             label="keepalive connections",

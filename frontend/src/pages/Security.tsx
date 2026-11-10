@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useAction, useResource } from "../lib/hooks";
 import { Domain } from "../lib/types";
@@ -816,23 +816,51 @@ function PasskeysPanel() {
     "/api/v1/security/passkeys/",
   );
   const [busy, setBusy] = useState(false);
+  const [options, setOptions] = useState<Record<string, unknown> | null>(null);
+  const [platform, setPlatform] = useState<boolean | null>(null);
   const toast = useToast();
 
   const browserReason = webauthn.unavailableReason();
   const keys = data?.passkeys ?? [];
+  const ready = !!data?.available && !browserReason;
+
+  useEffect(() => {
+    if (webauthn.supported()) {
+      webauthn.platformAuthenticatorAvailable().then(setPlatform);
+    }
+  }, []);
+
+  // The challenge is fetched before the button is pressed, not after.
+  //
+  // navigator.credentials.create() needs the user gesture that started it, and
+  // Safari drops that activation across an awaited network request. Asking the
+  // server for options inside the click handler therefore fails there with
+  // NotAllowedError -- the same error the browser gives for a dismissed
+  // prompt, which is why it reads as though nobody touched anything.
+  const fetchOptions = useCallback(() => {
+    if (!ready) return;
+    api
+      .post<Record<string, unknown>>("/api/v1/auth/passkey/register/options/", {})
+      .then(setOptions)
+      .catch(() => setOptions(null));
+  }, [ready]);
+
+  useEffect(fetchOptions, [fetchOptions, keys.length]);
 
   async function enrol() {
-    const label =
-      window.prompt("What should this device be called?", "This device")?.trim() ?? "";
-    if (!label) return;
-
+    if (!options) return;
     setBusy(true);
+
     try {
-      const options = await api.post<Record<string, unknown>>(
-        "/api/v1/auth/passkey/register/options/",
-        {},
-      );
+      // First await in the handler, so the gesture is still live.
       const credential = await webauthn.create(options);
+
+      // Named afterwards. A modal prompt() beforehand also discards the
+      // activation, and by here the ceremony is already done.
+      const label =
+        window.prompt("What should this device be called?", "This device")?.trim() ||
+        "This device";
+
       await api.post("/api/v1/auth/passkey/register/verify/", { credential, label });
       toast(`${label} can now sign you in.`);
       reload();
@@ -840,6 +868,8 @@ function PasskeysPanel() {
       const apiError = err as { status?: number; message?: string };
       toast(apiError.status ? apiError.message! : webauthn.describe(err), "error");
     } finally {
+      // Used or not, that challenge is spent. Get another.
+      fetchOptions();
       setBusy(false);
     }
   }
@@ -906,11 +936,19 @@ function PasskeysPanel() {
       <div className="panel__body">
         <button
           className="btn btn--primary"
-          disabled={busy || !data?.available || !!browserReason}
+          disabled={busy || !ready || !options}
           onClick={enrol}
         >
           {busy ? "Waiting for your device…" : "Add a passkey"}
         </button>
+
+        {ready && platform === false && (
+          <p className="field__help" style={{ marginTop: 8 }}>
+            This device has no built-in fingerprint, face or PIN unlock that the
+            panel can use. You can still enrol a security key, or a phone, from the
+            prompt — or set up a screen lock here first.
+          </p>
+        )}
       </div>
     </Panel>
   );

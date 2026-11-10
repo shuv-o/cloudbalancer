@@ -47,6 +47,23 @@ export function unavailableReason(): string | null {
   return null;
 }
 
+/**
+ * Whether this device has a built-in authenticator that can verify the user.
+ *
+ * Enrolment asks for user verification, because that is what makes one passkey
+ * stand in for a password and a code together. A device with no screen lock
+ * cannot satisfy it, and the browser reports that refusal identically to the
+ * person simply closing the prompt — so it is worth knowing beforehand.
+ */
+export async function platformAuthenticatorAvailable(): Promise<boolean> {
+  try {
+    return await window.PublicKeyCredential
+      .isUserVerifyingPlatformAuthenticatorAvailable();
+  } catch {
+    return false;
+  }
+}
+
 type Options = Record<string, unknown>;
 
 /** Create a credential. `options` is the server's response, passed through unchanged. */
@@ -120,7 +137,17 @@ export function describe(error: unknown): string {
   const err = error as { name?: string; message?: string };
   switch (err?.name) {
     case "NotAllowedError":
-      return "No passkey was used. The prompt was dismissed or it timed out.";
+      // The browser reports several unrelated situations this way and will not
+      // say which, deliberately: distinguishing them would tell a hostile page
+      // what authenticators someone has. So this lists them rather than
+      // picking one and sounding certain.
+      return (
+        "The passkey prompt did not complete. Either it was dismissed, or this " +
+        "device has no authenticator that can do what the panel asked for — a " +
+        "fingerprint, face or device PIN is required, so a screen lock must be " +
+        "set up. On a device without one, choose the security key or phone " +
+        "option in the prompt."
+      );
     case "InvalidStateError":
       return "This device already has a passkey for your account.";
     case "SecurityError":
@@ -128,6 +155,10 @@ export function describe(error: unknown): string {
     case "AbortError":
       return "Cancelled.";
     default:
-      return err?.message || "The passkey could not be used.";
+      // Name the exception. Without it a report of this says only "it did not
+      // work", and there is nothing to act on.
+      return err?.name
+        ? `${err.name}: ${err.message || "the passkey could not be used."}`
+        : err?.message || "The passkey could not be used.";
   }
 }

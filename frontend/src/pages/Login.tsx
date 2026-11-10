@@ -16,6 +16,9 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
   const [busy, setBusy] = useState(false);
   const [passkeyBusy, setPasskeyBusy] = useState(false);
   const [passkeysOffered, setPasskeysOffered] = useState(false);
+  const [passkeyOptions, setPasskeyOptions] = useState<Record<string, unknown> | null>(
+    null,
+  );
   const codeRef = useRef<HTMLInputElement>(null);
 
   // Two things have to be true: this browser can do passkeys, and the panel is
@@ -23,23 +26,41 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
   // button that cannot possibly work off the form.
   useEffect(() => {
     if (!webauthn.supported()) return;
+
+    let cancelled = false;
     api
       .get<{ passkeys_available?: boolean }>("/api/v1/auth/me/")
-      .then((body) => setPasskeysOffered(!!body.passkeys_available))
+      .then(async (body) => {
+        if (cancelled || !body.passkeys_available) return;
+
+        // Fetched now rather than inside the click. Safari drops the user
+        // activation that navigator.credentials.get() requires across an
+        // awaited network request, and reports the loss as NotAllowedError --
+        // indistinguishable from the person closing the prompt.
+        await primeCsrf();
+        const fetched = await api.post<Record<string, unknown>>(
+          "/api/v1/auth/passkey/login/options/",
+          {},
+        );
+        if (cancelled) return;
+        setPasskeyOptions(fetched);
+        setPasskeysOffered(true);
+      })
       .catch(() => setPasskeysOffered(false));
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function signInWithPasskey() {
+    if (!passkeyOptions) return;
     setPasskeyBusy(true);
     setError(null);
 
     try {
-      await primeCsrf();
-      const options = await api.post<Record<string, unknown>>(
-        "/api/v1/auth/passkey/login/options/",
-        {},
-      );
-      const credential = await webauthn.get(options);
+      // First await in the handler, so the gesture is still live.
+      const credential = await webauthn.get(passkeyOptions);
       const user = await api.post<User>("/api/v1/auth/passkey/login/verify/", {
         credential,
       });
@@ -55,6 +76,13 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
           : webauthn.describe(err),
       );
     } finally {
+      // Whether it was used or not, that challenge is spent. Without a fresh
+      // one, a second attempt fails with "this sign-in has expired" and looks
+      // like the passkey itself stopped working.
+      api
+        .post<Record<string, unknown>>("/api/v1/auth/passkey/login/options/", {})
+        .then(setPasskeyOptions)
+        .catch(() => setPasskeyOptions(null));
       setPasskeyBusy(false);
     }
   }
@@ -128,7 +156,7 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
                   type="button"
                   className="btn btn--primary"
                   style={{ width: "100%", justifyContent: "center" }}
-                  disabled={passkeyBusy || busy || locked}
+                  disabled={passkeyBusy || busy || locked || !passkeyOptions}
                   onClick={signInWithPasskey}
                 >
                   {passkeyBusy ? "Waiting for your device…" : "Sign in with a passkey"}

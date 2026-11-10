@@ -2,7 +2,21 @@ import { FormEvent, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { useAction, useResource } from "../lib/hooks";
 import { Backend, Domain, RoutingRule } from "../lib/types";
-import { Check, Empty, Field, Modal, Notice, Panel, Row, Tag, useToast } from "../components/ui";
+import {
+  Advanced,
+  Check,
+  Empty,
+  Field,
+  Modal,
+  Notice,
+  Outcome,
+  Panel,
+  Row,
+  Tag,
+  useToast,
+} from "../components/ui";
+import * as validate from "../lib/validate";
+import { duration } from "../lib/format";
 
 const MATCH_TYPES = [
   {
@@ -84,6 +98,9 @@ function RuleForm({
   onSaved: () => void;
 }) {
   const [draft, setDraft] = useState(initial);
+  // The path is checked on blur rather than on each keystroke: reporting that
+  // "/" is not a valid path while someone is still typing it is noise.
+  const [pathTouched, setPathTouched] = useState(false);
   const toast = useToast();
 
   const [save, { busy, error }] = useAction(async (event: FormEvent) => {
@@ -107,10 +124,34 @@ function RuleForm({
   const cachingAuthenticated =
     draft.cache_enabled && !draft.cache_bypass_auth && !draft.cache_allow_authenticated;
 
+  // What differs from the default, per collapsed section. A section that hides
+  // a changed setting announces the count rather than concealing it.
+  const cacheChanged =
+    (draft.cache_enabled ? 1 : 0) +
+    (draft.cache_ttl !== 600 ? 1 : 0) +
+    (draft.cache_min_uses !== 1 ? 1 : 0) +
+    (!draft.cache_bypass_auth ? 1 : 0) +
+    (draft.cache_ignore_upstream_control ? 1 : 0) +
+    (draft.cache_key_headers.length ? 1 : 0);
+
+  const trafficChanged =
+    (draft.rate_limit_enabled ? 1 : 0) + (!draft.proxy_buffering ? 1 : 0);
+
+  const deliveryChanged =
+    (draft.priority !== 100 ? 1 : 0) +
+    (draft.proxy_read_timeout !== (draft.proxy_buffering ? 60 : 3600) ? 1 : 0) +
+    (draft.strip_prefix ? 1 : 0);
+
+  const pathProblem = validate.matchValue(
+    draft.match_value,
+    draft.match_type === "regex",
+  );
+  const backend = backends.find((b) => b.id === draft.backend_id);
+
   return (
     <Modal
       title={existing ? "Edit route" : "Add a route"}
-      subtitle="A route decides which backend answers a request. Rules are checked from lowest priority number upward."
+      subtitle="A route decides which backend answers a request."
       wide
       onClose={onClose}
       footer={
@@ -121,7 +162,7 @@ function RuleForm({
           <button
             className="btn btn--primary"
             form="rule-form"
-            disabled={busy || cachingAuthenticated || !draft.match_value}
+            disabled={busy || cachingAuthenticated || !!pathProblem}
           >
             {busy ? "Saving…" : existing ? "Save route" : "Add route"}
           </button>
@@ -183,227 +224,309 @@ function RuleForm({
 
           <Field
             label={draft.match_type === "regex" ? "Pattern" : "Path"}
-            error={error?.fields.match_value?.[0]}
+            error={pathTouched ? (pathProblem ?? undefined) : error?.fields.match_value?.[0]}
           >
             <input
-              className="input input--mono"
+              className={`input input--mono${pathTouched && pathProblem ? " input--bad" : ""}`}
               value={draft.match_value}
               placeholder={draft.match_type === "regex" ? "^/v[0-9]+/" : "/api/"}
-              onChange={(e) => setDraft({ ...draft, match_value: e.target.value })}
+              aria-invalid={pathTouched && pathProblem ? true : undefined}
+              onBlur={() => setPathTouched(true)}
+              onChange={(e) => {
+                setDraft({ ...draft, match_value: e.target.value });
+                if (
+                  pathTouched &&
+                  !validate.matchValue(e.target.value, draft.match_type === "regex")
+                ) {
+                  setPathTouched(false);
+                }
+              }}
               required
             />
           </Field>
         </div>
 
-        <div className="row-2">
-          <Field
-            label="Priority"
-            help="Lower numbers are checked first. Give specific paths a lower number than catch-alls."
-          >
-            <input
-              className="input"
-              type="number"
-              value={draft.priority}
-              onChange={(e) => setDraft({ ...draft, priority: Number(e.target.value) })}
-            />
-          </Field>
+        <Outcome>
+          {draft.match_value && domain && backend ? (
+            <>
+              Requests to{" "}
+              <span className="mono">
+                {domain.name}
+                {draft.match_type === "regex" ? ` matching ${draft.match_value}` : draft.match_value}
+              </span>{" "}
+              go to <b>{backend.name}</b>
+              {draft.strip_prefix && draft.match_value !== "/"
+                ? `, with ${draft.match_value} removed from the path`
+                : ""}
+              {draft.cache_enabled ? `, cached for ${duration(draft.cache_ttl)}` : ""}
+              {!draft.proxy_buffering ? ", streamed rather than buffered" : ""}
+              {draft.rate_limit_enabled
+                ? `, limited to ${draft.rate_limit_rps} requests a second per client`
+                : ""}
+              .
+            </>
+          ) : (
+            <span className="outcome--empty">
+              Choose a hostname, a backend and a path to see what this route will do.
+            </span>
+          )}
+        </Outcome>
 
-          <Field
-            label={
-              draft.proxy_buffering ? "Wait up to (seconds)" : "Close after idle (seconds)"
-            }
-            help={
-              draft.proxy_buffering
-                ? "How long to wait for the backend to respond."
-                : "How long the open connection may go quiet before it is closed. A WebSocket with a slower heartbeat than this will be dropped."
-            }
-          >
-            <input
-              className="input"
-              type="number"
-              min={1}
-              value={draft.proxy_read_timeout}
-              onChange={(e) => setDraft({ ...draft, proxy_read_timeout: Number(e.target.value) })}
-            />
-          </Field>
-        </div>
-
-        {draft.match_type === "path_prefix" && draft.match_value !== "/" && (
+        <Advanced label="Caching" changed={cacheChanged}>
           <Check
-            label={`Remove ${draft.match_value} before forwarding`}
-            help={`The backend receives /rest instead of ${draft.match_value}rest.`}
-            checked={draft.strip_prefix}
-            onChange={(v) => setDraft({ ...draft, strip_prefix: v })}
+            label="Cache responses at the gateway"
+            help="Only GET and HEAD are ever cached. Whatever the backend says in Cache-Control, Expires or ETag still takes precedence over the settings here."
+            checked={draft.cache_enabled}
+            onChange={(v) => setDraft({ ...draft, cache_enabled: v })}
+            disabled={!draft.proxy_buffering}
           />
-        )}
 
-        <h3 style={{ fontSize: "0.86rem", margin: "22px 0 10px", color: "var(--text-dim)" }}>
-          Caching
-        </h3>
+          {!draft.proxy_buffering && (
+            <p className="field__help" style={{ marginTop: -4 }}>
+              Streamed routes are never cached: a response that arrives in pieces over a
+              held connection has nothing to store.
+            </p>
+          )}
 
-        <Check
-          label="Cache responses at the gateway"
-          help="Only GET and HEAD are ever cached. Whatever the backend says in Cache-Control, Expires or ETag still takes precedence over the settings here."
-          checked={draft.cache_enabled}
-          onChange={(v) => setDraft({ ...draft, cache_enabled: v })}
-        />
+          {draft.cache_enabled && (
+            <>
+              <div className="row-2">
+                <Field
+                  label="Keep for (seconds)"
+                  help="Used only when the backend sends no caching headers of its own."
+                  error={
+                    validate.range(draft.cache_ttl, {
+                      low: 0,
+                      high: 31536000,
+                      label: "cache TTL",
+                      unit: "s",
+                    }) ?? undefined
+                  }
+                >
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    value={draft.cache_ttl}
+                    onChange={(e) => setDraft({ ...draft, cache_ttl: Number(e.target.value) })}
+                  />
+                </Field>
 
-        {draft.cache_enabled && (
-          <>
-            <div className="row-2">
+                <Field
+                  label="Store after this many requests"
+                  help="Raise it above 1 so one-off URLs do not fill the cache."
+                >
+                  <input
+                    className="input"
+                    type="number"
+                    min={1}
+                    value={draft.cache_min_uses}
+                    onChange={(e) =>
+                      setDraft({ ...draft, cache_min_uses: Number(e.target.value) })
+                    }
+                  />
+                </Field>
+              </div>
+
+              <Check
+                label="Skip the cache for signed-in requests"
+                help="Requests carrying an Authorization header or a session cookie go straight to the backend, and their responses are never stored."
+                checked={draft.cache_bypass_auth}
+                onChange={(v) =>
+                  setDraft({
+                    ...draft,
+                    cache_bypass_auth: v,
+                    cache_allow_authenticated: v ? false : draft.cache_allow_authenticated,
+                  })
+                }
+              />
+
+              {!draft.cache_bypass_auth && (
+                <Notice tone="error">
+                  <span>
+                    <strong>This caches signed-in responses.</strong> One user's data will be
+                    served to the next person who asks for the same URL. Only correct if every
+                    response on this path is identical for every caller.
+                  </span>
+                </Notice>
+              )}
+
+              {!draft.cache_bypass_auth && (
+                <Check
+                  label="I understand, cache them anyway"
+                  checked={draft.cache_allow_authenticated}
+                  onChange={(v) => setDraft({ ...draft, cache_allow_authenticated: v })}
+                />
+              )}
+
+              <Check
+                label="Cache even when the backend says not to"
+                help="Ignores Cache-Control: no-cache from the backend. It overrides the backend's own judgement, so leave it off unless you know why you are turning it on."
+                checked={draft.cache_ignore_upstream_control}
+                onChange={(v) => setDraft({ ...draft, cache_ignore_upstream_control: v })}
+              />
+
               <Field
-                label="Keep for (seconds)"
-                help="Used only when the backend sends no caching headers of its own."
+                label="Also vary the cache by these headers"
+                help="One entry per line. Accept-Encoding is always included. Any header this route switches on is added automatically."
+                error={
+                  draft.cache_key_headers
+                    .map((h) => validate.headerName(h.trim()))
+                    .find((problem) => problem) ?? undefined
+                }
               >
-                <input
-                  className="input"
-                  type="number"
-                  min={0}
-                  value={draft.cache_ttl}
-                  onChange={(e) => setDraft({ ...draft, cache_ttl: Number(e.target.value) })}
+                <textarea
+                  className="textarea textarea--mono"
+                  style={{ minHeight: 72 }}
+                  value={draft.cache_key_headers.join("\n")}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      cache_key_headers: e.target.value.split("\n").filter((h) => h.trim()),
+                    })
+                  }
                 />
               </Field>
+            </>
+          )}
+        </Advanced>
 
+        <Advanced label="Rate limiting and streaming" changed={trafficChanged}>
+          <Check
+            label="Limit requests per client"
+            checked={draft.rate_limit_enabled}
+            onChange={(v) => setDraft({ ...draft, rate_limit_enabled: v })}
+          />
+
+          {draft.rate_limit_enabled && (
+            <div className="row-2">
               <Field
-                label="Store after this many requests"
-                help="Raise it above 1 so one-off URLs do not fill the cache."
+                label="Requests per second"
+                help="Per client IP address."
+                error={
+                  validate.range(draft.rate_limit_rps, {
+                    low: 1,
+                    high: 1000000,
+                    label: "rate limit",
+                    unit: "r/s",
+                  }) ?? undefined
+                }
               >
                 <input
                   className="input"
                   type="number"
                   min={1}
-                  value={draft.cache_min_uses}
-                  onChange={(e) => setDraft({ ...draft, cache_min_uses: Number(e.target.value) })}
+                  value={draft.rate_limit_rps}
+                  onChange={(e) =>
+                    setDraft({ ...draft, rate_limit_rps: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="Allow a burst of"
+                help="How many requests may arrive above the rate before any are refused with a 429."
+              >
+                <input
+                  className="input"
+                  type="number"
+                  min={0}
+                  value={draft.rate_limit_burst}
+                  onChange={(e) =>
+                    setDraft({ ...draft, rate_limit_burst: Number(e.target.value) })
+                  }
                 />
               </Field>
             </div>
+          )}
 
-            <Check
-              label="Skip the cache for signed-in requests"
-              help="Requests carrying an Authorization header or a session cookie go straight to the backend, and their responses are never stored."
-              checked={draft.cache_bypass_auth}
-              onChange={(v) =>
-                setDraft({
-                  ...draft,
-                  cache_bypass_auth: v,
-                  cache_allow_authenticated: v ? false : draft.cache_allow_authenticated,
-                })
-              }
-            />
+          <Check
+            label="Stream the response"
+            help="Turn this on for WebSocket, server-sent events or long downloads. Responses pass straight through, are never cached, and the upgrade handshake is forwarded."
+            checked={!draft.proxy_buffering}
+            onChange={(v) =>
+              setDraft({
+                ...draft,
+                proxy_buffering: !v,
+                cache_enabled: v ? false : draft.cache_enabled,
+                // The timeout changes meaning with the mode, so it moves with
+                // it. Leaving the request-response default would close idle
+                // sockets after a minute, which is the usual way WebSocket
+                // support appears to work and then does not.
+                proxy_read_timeout:
+                  v && draft.proxy_read_timeout === 60
+                    ? 3600
+                    : !v && draft.proxy_read_timeout === 3600
+                      ? 60
+                      : draft.proxy_read_timeout,
+              })
+            }
+          />
 
-            {!draft.cache_bypass_auth && (
-              <Notice tone="error">
-                <span>
-                  <strong>This caches signed-in responses.</strong> One user's data will be
-                  served to the next person who asks for the same URL. Only correct if every
-                  response on this path is identical for every caller.
-                </span>
-              </Notice>
-            )}
+          {!draft.proxy_buffering && (
+            <Notice>
+              <span>
+                The connection is closed after{" "}
+                <strong>{draft.proxy_read_timeout} seconds</strong> of silence. Set this
+                longer than your application's heartbeat, or the socket will drop between
+                beats and reconnect.
+              </span>
+            </Notice>
+          )}
+        </Advanced>
 
-            {!draft.cache_bypass_auth && (
-              <Check
-                label="I understand, cache them anyway"
-                checked={draft.cache_allow_authenticated}
-                onChange={(v) => setDraft({ ...draft, cache_allow_authenticated: v })}
-              />
-            )}
-
-            <Check
-              label="Cache even when the backend says not to"
-              help="Ignores Cache-Control: no-cache from the backend. It overrides the backend's own judgement, so leave it off unless you know why you are turning it on."
-              checked={draft.cache_ignore_upstream_control}
-              onChange={(v) => setDraft({ ...draft, cache_ignore_upstream_control: v })}
-            />
-
+        <Advanced label="Ordering and timeouts" changed={deliveryChanged}>
+          <div className="row-2">
             <Field
-              label="Also vary the cache by these headers"
-              help="One entry per line. Accept-Encoding is always included. Any header this route switches on is added automatically."
+              label="Priority"
+              help="Lower numbers are checked first. Give specific paths a lower number than catch-alls."
             >
-              <textarea
-                className="textarea textarea--mono"
-                style={{ minHeight: 72 }}
-                value={draft.cache_key_headers.join("\n")}
-                onChange={(e) =>
-                  setDraft({
-                    ...draft,
-                    cache_key_headers: e.target.value.split("\n").filter((h) => h.trim()),
-                  })
-                }
+              <input
+                className="input"
+                type="number"
+                value={draft.priority}
+                onChange={(e) => setDraft({ ...draft, priority: Number(e.target.value) })}
               />
             </Field>
-          </>
-        )}
 
-        <h3 style={{ fontSize: "0.86rem", margin: "22px 0 10px", color: "var(--text-dim)" }}>
-          Limits and streaming
-        </h3>
-
-        <Check
-          label="Limit requests per client"
-          checked={draft.rate_limit_enabled}
-          onChange={(v) => setDraft({ ...draft, rate_limit_enabled: v })}
-        />
-
-        {draft.rate_limit_enabled && (
-          <div className="row-2">
-            <Field label="Requests per second" help="Per client IP address.">
+            <Field
+              label={
+                draft.proxy_buffering ? "Wait up to (seconds)" : "Close after idle (seconds)"
+              }
+              help={
+                draft.proxy_buffering
+                  ? "How long to wait for the backend to respond."
+                  : "How long the open connection may go quiet before it is closed. A WebSocket with a slower heartbeat than this will be dropped."
+              }
+              error={
+                validate.range(draft.proxy_read_timeout, {
+                  low: 1,
+                  high: 86400,
+                  label: "timeout",
+                  unit: "s",
+                }) ?? undefined
+              }
+            >
               <input
                 className="input"
                 type="number"
                 min={1}
-                value={draft.rate_limit_rps}
-                onChange={(e) => setDraft({ ...draft, rate_limit_rps: Number(e.target.value) })}
-              />
-            </Field>
-            <Field
-              label="Allow a burst of"
-              help="How many requests may arrive above the rate before any are refused with a 429."
-            >
-              <input
-                className="input"
-                type="number"
-                min={0}
-                value={draft.rate_limit_burst}
-                onChange={(e) => setDraft({ ...draft, rate_limit_burst: Number(e.target.value) })}
+                value={draft.proxy_read_timeout}
+                onChange={(e) =>
+                  setDraft({ ...draft, proxy_read_timeout: Number(e.target.value) })
+                }
               />
             </Field>
           </div>
-        )}
 
-        <Check
-          label="Stream the response"
-          help="Turn this on for WebSocket, server-sent events or long downloads. Responses pass straight through, are never cached, and the upgrade handshake is forwarded."
-          checked={!draft.proxy_buffering}
-          onChange={(v) =>
-            setDraft({
-              ...draft,
-              proxy_buffering: !v,
-              cache_enabled: v ? false : draft.cache_enabled,
-              // The timeout changes meaning with the mode, so it moves with it.
-              // Leaving the request-response default would close idle sockets
-              // after a minute, which is the usual way WebSocket support
-              // appears to work and then does not.
-              proxy_read_timeout:
-                v && draft.proxy_read_timeout === 60
-                  ? 3600
-                  : !v && draft.proxy_read_timeout === 3600
-                    ? 60
-                    : draft.proxy_read_timeout,
-            })
-          }
-        />
-
-        {!draft.proxy_buffering && (
-          <Notice>
-            <span>
-              The connection is closed after{" "}
-              <strong>{draft.proxy_read_timeout} seconds</strong> of silence. Set this
-              longer than your application's heartbeat, or the socket will drop between
-              beats and reconnect.
-            </span>
-          </Notice>
-        )}
+          {draft.match_type === "path_prefix" && draft.match_value !== "/" && (
+            <Check
+              label={`Remove ${draft.match_value} before forwarding`}
+              help={`The backend receives /rest instead of ${draft.match_value}rest.`}
+              checked={draft.strip_prefix}
+              onChange={(v) => setDraft({ ...draft, strip_prefix: v })}
+            />
+          )}
+        </Advanced>
 
         <Check
           label="Route is live"

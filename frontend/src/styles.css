@@ -1105,3 +1105,128 @@ textarea {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ===========================================================================
+   Progressive disclosure, outcome statements, inline validation.
+
+   A form is a patch panel: the sections divide on hairlines, not on cards, and
+   the disclosure reads as a labelled break in the run rather than a widget
+   dropped on top of it.
+   =========================================================================== */
+
+.advanced {
+  border-top: 1px solid var(--line-soft);
+  margin: 18px 0 14px;
+}
+
+.advanced__toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 12px 0 11px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+}
+
+.advanced__toggle:hover {
+  color: var(--text);
+}
+
+.advanced__toggle:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 3px;
+}
+
+/* A hairline mark that rotates, in the panel's own idiom -- not a glyph. */
+.advanced__chevron {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-right: 1.5px solid var(--wire);
+  border-bottom: 1.5px solid var(--wire);
+  transform: rotate(-45deg);
+  transition: transform 140ms ease;
+}
+
+.advanced--open .advanced__chevron {
+  transform: rotate(45deg);
+}
+
+.advanced__label {
+  flex: 1;
+}
+
+/* A collapsed section must never hide a change silently. */
+.advanced__count {
+  flex: none;
+  font-family: var(--font-data);
+  font-size: 0.72rem;
+  color: var(--signal);
+  border: 1px solid var(--signal-dim);
+  border-radius: 2px;
+  padding: 1px 6px;
+}
+
+.advanced__body {
+  padding-top: 4px;
+  border-left: var(--rail) solid var(--line-soft);
+  padding-left: 16px;
+  margin-left: 2px;
+}
+
+/* ---------------------------------------------------------------------------
+   The sentence that says what the form will do.
+   --------------------------------------------------------------------------- */
+
+.outcome {
+  margin: 0 0 18px;
+  padding: 12px 14px;
+  background: var(--ink-750);
+  border-left: var(--rail) solid var(--signal);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  color: var(--text-dim);
+  font-size: 0.86rem;
+  line-height: 1.55;
+  max-width: 62ch;
+}
+
+.outcome b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.outcome .mono {
+  font-family: var(--font-data);
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.outcome--empty {
+  border-left-color: var(--line);
+  color: var(--text-faint);
+}
+
+/* ---------------------------------------------------------------------------
+   A field that has been corrected should look corrected.
+   --------------------------------------------------------------------------- */
+
+.input--bad,
+input.input--bad {
+  border-color: var(--down);
+}
+
+.input--bad:focus {
+  outline-color: var(--down);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .advanced__chevron {
+    transition: none;
+  }
+}

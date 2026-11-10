@@ -255,3 +255,117 @@ export function ToastHost({ children }: { children: ReactNode }) {
     </ToastContext.Provider>
   );
 }
+
+/* ---------------------------------------------------------------------------
+   Progressive disclosure
+
+   A form that shows every setting at once gives them all the same weight, and
+   an operator who does not already know the system cannot tell which three
+   matter. These hide the rest -- but never silently: the summary counts the
+   settings that differ from their defaults, so a collapsed section always
+   declares that something inside it has been changed.
+   --------------------------------------------------------------------------- */
+
+export function Advanced({
+  label,
+  changed = 0,
+  children,
+  defaultOpen = false,
+}: {
+  label: string;
+  changed?: number;
+  children: ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen || changed > 0);
+
+  return (
+    <div className={`advanced${open ? " advanced--open" : ""}`}>
+      <button
+        type="button"
+        className="advanced__toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="advanced__chevron" aria-hidden="true" />
+        <span className="advanced__label">{label}</span>
+        {changed > 0 && (
+          <span className="advanced__count">
+            {changed} changed
+          </span>
+        )}
+      </button>
+      {open && <div className="advanced__body">{children}</div>}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   Outcome
+
+   What the form will actually do, in a sentence, updating as it is filled in.
+   The operator confirms a result rather than auditing a list of fields -- which
+   is the difference between understanding a route and merely having typed one.
+   --------------------------------------------------------------------------- */
+
+export function Outcome({ children }: { children: ReactNode }) {
+  return (
+    <p className="outcome" aria-live="polite">
+      {children}
+    </p>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   A text input that reports its own problem.
+
+   Validation runs on blur rather than on every keystroke: telling someone the
+   hostname is invalid while they are still typing the first letter of it is
+   noise, not help. Once a field has been corrected the message clears
+   immediately, so the fix is acknowledged without waiting for another blur.
+   --------------------------------------------------------------------------- */
+
+export function Validated({
+  label,
+  help,
+  value,
+  onChange,
+  check,
+  placeholder,
+  type = "text",
+  mono = false,
+  disabled,
+}: {
+  label: string;
+  help?: string;
+  value: string;
+  onChange: (value: string) => void;
+  check?: (value: string) => string | null;
+  placeholder?: string;
+  type?: string;
+  mono?: boolean;
+  disabled?: boolean;
+}) {
+  const [touched, setTouched] = useState(false);
+  const problem = check ? check(value) : null;
+  const shown = touched ? problem : null;
+
+  return (
+    <Field label={label} help={help} error={shown ?? undefined}>
+      <input
+        type={type}
+        className={`input${mono ? " input--mono" : ""}${shown ? " input--bad" : ""}`}
+        value={value}
+        placeholder={placeholder}
+        disabled={disabled}
+        aria-invalid={shown ? true : undefined}
+        onBlur={() => setTouched(true)}
+        onChange={(event) => {
+          onChange(event.target.value);
+          // Clear a shown message the moment it stops being true.
+          if (touched && check && !check(event.target.value)) setTouched(false);
+        }}
+      />
+    </Field>
+  );
+}

@@ -3,7 +3,21 @@ import { api } from "../lib/api";
 import { useAction, useResource } from "../lib/hooks";
 import { Backend, BackendInstance } from "../lib/types";
 import { ms, relativeTime } from "../lib/format";
-import { Check, Empty, Field, Modal, Notice, Panel, Row, Tag, useToast } from "../components/ui";
+import {
+  Advanced,
+  Check,
+  Empty,
+  Field,
+  Modal,
+  Notice,
+  Outcome,
+  Panel,
+  Row,
+  Tag,
+  Validated,
+  useToast,
+} from "../components/ui";
+import * as validate from "../lib/validate";
 
 const LB_METHODS = [
   {
@@ -90,6 +104,25 @@ function BackendForm({
 
   const method = LB_METHODS.find((m) => m.value === draft.lb_method);
 
+  const nameProblem = validate.identifier(draft.name, "backend name");
+  const sniProblem = draft.tls_server_name ? validate.hostname(draft.tls_server_name) : null;
+  const caProblem = validate.configPath(draft.tls_trusted_ca_path, "CA bundle path");
+  const timingProblem = draft.health_check_enabled
+    ? validate.healthTiming(draft.health_check_timeout, existing?.health_check_interval ?? 10)
+    : null;
+
+  const balancingChanged =
+    (draft.lb_method !== "round_robin" ? 1 : 0) +
+    (draft.keepalive_connections !== 32 ? 1 : 0) +
+    (draft.keepalive_requests !== 1000 ? 1 : 0);
+
+  const healthChanged =
+    (!draft.health_check_enabled ? 1 : 0) +
+    (draft.health_check_path !== "/health" ? 1 : 0) +
+    (draft.drain_unhealthy ? 1 : 0);
+
+  const blocked = !!(nameProblem || sniProblem || caProblem || timingProblem);
+
   return (
     <Modal
       title={existing ? `Edit ${existing.name}` : "Add a backend"}
@@ -100,7 +133,7 @@ function BackendForm({
           <button className="btn" type="button" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn btn--primary" form="backend-form" disabled={busy || !draft.name}>
+          <button className="btn btn--primary" form="backend-form" disabled={busy || blocked}>
             {busy ? "Saving…" : existing ? "Save changes" : "Add backend"}
           </button>
         </>
@@ -113,32 +146,15 @@ function BackendForm({
           </div>
         )}
 
-        <div className="row-2">
-          <Field label="Name" help="How you will refer to this service." error={error?.fields.name?.[0]}>
-            <input
-              className="input input--mono"
-              value={draft.name}
-              placeholder="user-service"
-              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-              autoFocus
-              required
-            />
-          </Field>
-
-          <Field label="Spread traffic by" help={method?.note}>
-            <select
-              className="select"
-              value={draft.lb_method}
-              onChange={(e) => setDraft({ ...draft, lb_method: e.target.value })}
-            >
-              {LB_METHODS.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </Field>
-        </div>
+        <Validated
+          label="Name"
+          help="How you will refer to this service."
+          value={draft.name}
+          placeholder="user-service"
+          mono
+          check={(v) => validate.identifier(v, "backend name")}
+          onChange={(v) => setDraft({ ...draft, name: v })}
+        />
 
         <Field label="Notes">
           <input
@@ -147,10 +163,6 @@ function BackendForm({
             onChange={(e) => setDraft({ ...draft, description: e.target.value })}
           />
         </Field>
-
-        <h3 style={{ fontSize: "0.86rem", margin: "20px 0 10px", color: "var(--text-dim)" }}>
-          How to reach it
-        </h3>
 
         <Field
           label="Protocol"
@@ -172,17 +184,15 @@ function BackendForm({
 
         {draft.scheme === "https" && (
           <>
-            <Field
+            <Validated
               label="Send this hostname to the backend"
               help="Leave empty to forward whatever the client asked for. A backend that routes by hostname — Traefik, another Nginx — needs that name, or it matches nothing and answers 404."
-            >
-              <input
-                className="input input--mono"
-                value={draft.tls_server_name}
-                placeholder="(the client's hostname)"
-                onChange={(e) => setDraft({ ...draft, tls_server_name: e.target.value })}
-              />
-            </Field>
+              value={draft.tls_server_name}
+              placeholder="(the client's hostname)"
+              mono
+              check={(v) => (v ? validate.hostname(v) : null)}
+              onChange={(v) => setDraft({ ...draft, tls_server_name: v })}
+            />
 
             <Check
               label="Check the backend's certificate"
@@ -192,134 +202,169 @@ function BackendForm({
             />
 
             {draft.tls_verify && (
-              <Field
+              <Validated
                 label="CA bundle path"
                 help="A PEM file inside the gateway container that signs the backend's certificate."
-              >
-                <input
-                  className="input input--mono"
-                  value={draft.tls_trusted_ca_path}
-                  placeholder="/etc/nginx/ssl/backend-ca.pem"
-                  onChange={(e) =>
-                    setDraft({ ...draft, tls_trusted_ca_path: e.target.value })
-                  }
-                />
-              </Field>
+                value={draft.tls_trusted_ca_path}
+                placeholder="/etc/nginx/ssl/backend-ca.pem"
+                mono
+                check={(v) => validate.configPath(v, "CA bundle path")}
+                onChange={(v) => setDraft({ ...draft, tls_trusted_ca_path: v })}
+              />
             )}
           </>
         )}
 
-        <h3 style={{ fontSize: "0.86rem", margin: "20px 0 10px", color: "var(--text-dim)" }}>
-          Connection reuse
-        </h3>
+        <Outcome>
+          {draft.name ? (
+            <>
+              Traffic for <b>{draft.name}</b> is sent over{" "}
+              <b>{draft.scheme === "https" ? "HTTPS" : "HTTP"}</b> to its instances
+              {draft.lb_method !== "round_robin" && method ? (
+                <>, chosen by {method.label.toLowerCase()}</>
+              ) : (
+                <>, one after another</>
+              )}
+              {draft.health_check_enabled ? ", and each one is probed on a schedule" : ""}.
+              {draft.scheme === "https" && (
+                <>
+                  {" "}
+                  Add instances on port <span className="mono">443</span>, not{" "}
+                  <span className="mono">80</span>.
+                </>
+              )}
+            </>
+          ) : (
+            <span className="outcome--empty">Name the service to see what will happen to its traffic.</span>
+          )}
+        </Outcome>
 
-        <div className="row-2">
-          <Field
-            label="Idle connections per worker"
-            help="Set this to the peak number of requests one worker has in flight to this backend. Too low and most requests pay for a fresh TCP handshake."
-          >
-            <input
-              className="input"
-              type="number"
-              min={1}
-              value={draft.keepalive_connections}
-              onChange={(e) =>
-                setDraft({ ...draft, keepalive_connections: Number(e.target.value) })
-              }
-            />
+        <Advanced label="Load balancing and connections" changed={balancingChanged}>
+          <Field label="Spread traffic by" help={method?.note}>
+            <select
+              className="select"
+              value={draft.lb_method}
+              onChange={(e) => setDraft({ ...draft, lb_method: e.target.value })}
+            >
+              {LB_METHODS.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
           </Field>
 
-          <Field
-            label="Requests per connection"
-            help="How many requests reuse one connection before it is reopened."
-          >
-            <input
-              className="input"
-              type="number"
-              min={1}
-              value={draft.keepalive_requests}
-              onChange={(e) => setDraft({ ...draft, keepalive_requests: Number(e.target.value) })}
-            />
-          </Field>
-        </div>
+          <div className="row-2">
+            <Field
+              label="Idle connections per worker"
+              help="Set this to the peak number of requests one worker has in flight to this backend. Too low and most requests pay for a fresh TCP handshake."
+            >
+              <input
+                className="input"
+                type="number"
+                min={1}
+                value={draft.keepalive_connections}
+                onChange={(e) =>
+                  setDraft({ ...draft, keepalive_connections: Number(e.target.value) })
+                }
+              />
+            </Field>
 
-        <h3 style={{ fontSize: "0.86rem", margin: "20px 0 10px", color: "var(--text-dim)" }}>
-          Health checks
-        </h3>
+            <Field
+              label="Requests per connection"
+              help="How many requests reuse one connection before it is reopened."
+            >
+              <input
+                className="input"
+                type="number"
+                min={1}
+                value={draft.keepalive_requests}
+                onChange={(e) =>
+                  setDraft({ ...draft, keepalive_requests: Number(e.target.value) })
+                }
+              />
+            </Field>
+          </div>
+        </Advanced>
 
-        <Notice>
-          <span>
-            Nginx already fails over to another instance the moment one stops responding, per
-            request and in real time. These probes are for telling you what is happening —
-            they only steer traffic if you turn on draining below.
-          </span>
-        </Notice>
+        <Advanced label="Health checks" changed={healthChanged}>
+          <Notice>
+            <span>
+              Nginx already fails over to another instance the moment one stops responding, per
+              request and in real time. These probes are for telling you what is happening —
+              they only steer traffic if you turn on draining below.
+            </span>
+          </Notice>
 
-        <Check
-          label="Probe instances"
-          help="Sends a request to each instance on a schedule and records the result."
-          checked={draft.health_check_enabled}
-          onChange={(v) => setDraft({ ...draft, health_check_enabled: v })}
-        />
+          <Check
+            label="Probe instances"
+            help="Sends a request to each instance on a schedule and records the result."
+            checked={draft.health_check_enabled}
+            onChange={(v) => setDraft({ ...draft, health_check_enabled: v })}
+          />
 
-        {draft.health_check_enabled && (
-          <>
-            <div className="row-2">
-              <Field label="Probe path">
-                <input
-                  className="input input--mono"
-                  value={draft.health_check_path}
-                  onChange={(e) => setDraft({ ...draft, health_check_path: e.target.value })}
-                />
-              </Field>
-              <Field label="Give up after (seconds)">
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  value={draft.health_check_timeout}
-                  onChange={(e) =>
-                    setDraft({ ...draft, health_check_timeout: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            </div>
-
-            <Check
-              label="Take failing instances out of rotation"
-              help="Rewrites the gateway config to mark the instance down. Each change costs a reload, so it waits for several failures in a row before acting."
-              checked={draft.drain_unhealthy}
-              onChange={(v) => setDraft({ ...draft, drain_unhealthy: v })}
-            />
-
-            {draft.drain_unhealthy && (
+          {draft.health_check_enabled && (
+            <>
               <div className="row-2">
-                <Field label="Failures before removing">
+                <Validated
+                  label="Probe path"
+                  value={draft.health_check_path}
+                  mono
+                  check={(v) => (v ? validate.matchValue(v, false) : null)}
+                  onChange={(v) => setDraft({ ...draft, health_check_path: v })}
+                />
+                <Field
+                  label="Give up after (seconds)"
+                  error={timingProblem ?? undefined}
+                >
                   <input
-                    className="input"
+                    className={`input${timingProblem ? " input--bad" : ""}`}
                     type="number"
                     min={1}
-                    value={draft.unhealthy_threshold}
+                    value={draft.health_check_timeout}
                     onChange={(e) =>
-                      setDraft({ ...draft, unhealthy_threshold: Number(e.target.value) })
-                    }
-                  />
-                </Field>
-                <Field label="Successes before restoring">
-                  <input
-                    className="input"
-                    type="number"
-                    min={1}
-                    value={draft.healthy_threshold}
-                    onChange={(e) =>
-                      setDraft({ ...draft, healthy_threshold: Number(e.target.value) })
+                      setDraft({ ...draft, health_check_timeout: Number(e.target.value) })
                     }
                   />
                 </Field>
               </div>
-            )}
-          </>
-        )}
+
+              <Check
+                label="Take failing instances out of rotation"
+                help="Rewrites the gateway config to mark the instance down. Each change costs a reload, so it waits for several failures in a row before acting."
+                checked={draft.drain_unhealthy}
+                onChange={(v) => setDraft({ ...draft, drain_unhealthy: v })}
+              />
+
+              {draft.drain_unhealthy && (
+                <div className="row-2">
+                  <Field label="Failures before removing">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={draft.unhealthy_threshold}
+                      onChange={(e) =>
+                        setDraft({ ...draft, unhealthy_threshold: Number(e.target.value) })
+                      }
+                    />
+                  </Field>
+                  <Field label="Successes before restoring">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={draft.healthy_threshold}
+                      onChange={(e) =>
+                        setDraft({ ...draft, healthy_threshold: Number(e.target.value) })
+                      }
+                    />
+                  </Field>
+                </div>
+              )}
+            </>
+          )}
+        </Advanced>
 
         <Check
           label="Accept traffic"
@@ -352,6 +397,11 @@ function InstanceForm({
   });
   const toast = useToast();
 
+  // The combination that reads as a routing fault: cleartext sent to a TLS
+  // port makes a router answer its catch-all 404, which looks like a missing
+  // route rather than a wrong protocol.
+  const portProblem = validate.schemePort(backend.scheme, draft.port);
+
   const [save, { busy, error }] = useAction(async (event: FormEvent) => {
     event.preventDefault();
     const base = `/api/v1/backends/${backend.id}/instances/`;
@@ -378,7 +428,7 @@ function InstanceForm({
           <button
             className="btn btn--primary"
             form="instance-form"
-            disabled={busy || !draft.address}
+            disabled={busy || !draft.address || !!portProblem}
           >
             {busy ? "Saving…" : existing ? "Save changes" : "Add instance"}
           </button>
@@ -403,13 +453,24 @@ function InstanceForm({
               required
             />
           </Field>
-          <Field label="Port">
+          <Field
+            label="Port"
+            help={
+              portProblem
+                ? undefined
+                : backend.scheme === "https"
+                  ? "This backend speaks HTTPS, so its port is usually 443."
+                  : undefined
+            }
+            error={portProblem ?? undefined}
+          >
             <input
-              className="input input--mono"
+              className={`input input--mono${portProblem ? " input--bad" : ""}`}
               type="number"
               min={1}
               max={65535}
               value={draft.port}
+              aria-invalid={portProblem ? true : undefined}
               onChange={(e) => setDraft({ ...draft, port: Number(e.target.value) })}
             />
           </Field>

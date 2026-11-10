@@ -4,7 +4,20 @@ import { api } from "../lib/api";
 import { useAction, useResource } from "../lib/hooks";
 import { Domain } from "../lib/types";
 import { expiryPhrase, relativeTime } from "../lib/format";
-import { Check, Empty, Field, Modal, Notice, Panel, Row, Tag, useToast } from "../components/ui";
+import {
+  Check,
+  Empty,
+  Field,
+  Modal,
+  Notice,
+  Outcome,
+  Panel,
+  Row,
+  Tag,
+  Validated,
+  useToast,
+} from "../components/ui";
+import * as validate from "../lib/validate";
 
 interface DraftDomain {
   name: string;
@@ -76,20 +89,29 @@ function DomainForm({
           </div>
         )}
 
-        <Field
+        <Validated
           label="Hostname"
-          help="The name clients will use, e.g. api.example.com. One hostname per domain."
-          error={error?.fields.name?.[0]}
-        >
-          <input
-            className="input input--mono"
-            value={draft.name}
-            placeholder="api.example.com"
-            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-            autoFocus
-            required
-          />
-        </Field>
+          help="The name clients will use. One hostname per domain."
+          value={draft.name}
+          placeholder="api.example.com"
+          mono
+          check={validate.hostname}
+          onChange={(v) => setDraft({ ...draft, name: v })}
+        />
+
+        <Outcome>
+          {validate.hostname(draft.name) === null ? (
+            <>
+              Point an <b>A record</b> for <span className="mono">{draft.name.trim().toLowerCase()}</span>{" "}
+              at this gateway. A certificate is requested once the name resolves here, and
+              {draft.force_ssl_redirect ? " visitors on http are sent to https." : " http and https are both served."}
+            </>
+          ) : (
+            <span className="outcome--empty">
+              Enter the hostname your visitors will type, without https:// in front of it.
+            </span>
+          )}
+        </Outcome>
 
         <Field label="Notes" help="Optional. What this hostname is for.">
           <input

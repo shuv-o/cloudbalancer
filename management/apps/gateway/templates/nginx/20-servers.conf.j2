@@ -126,7 +126,13 @@
         # Anything the backend does say -- Cache-Control, Expires, ETag --
         # still takes precedence over these values.
         proxy_cache_valid   200 302 {{ rule.cache_ttl }}s;
-        proxy_cache_valid   404 60s;
+
+        # Deliberately no `proxy_cache_valid 404`. Negative caching turns a
+        # transient backend or routing fault into one that outlives its own
+        # cause: the 404 keeps being served after the fix, and -- through
+        # proxy_cache_use_stale below -- for considerably longer than its TTL.
+        # A backend that genuinely wants its 404s cached can still say so with
+        # Cache-Control, which is honoured.
         proxy_cache_min_uses {{ rule.cache_min_uses }};
 
         # Revalidate with If-None-Match / If-Modified-Since on expiry, so an

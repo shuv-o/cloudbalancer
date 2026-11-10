@@ -12,7 +12,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.test import TestCase, override_settings
 
-from apps.backends.services import backend_create, instance_add
+from apps.backends.services import backend_create, backend_update, instance_add
 from apps.domains.services import domain_create
 from apps.gateway.services import (
     cache_key_for,
@@ -685,7 +685,9 @@ class HttpsUpstreamTests(TestCase):
 
     def _render(self, **backend_kwargs):
         backend = backend_create(name="edge", **backend_kwargs)
-        instance_add(backend=backend, address="10.0.1.11", port=443)
+        # Not 443: this class varies the scheme, and http-on-443 is rejected
+        # as a misconfiguration in its own right. The port is incidental here.
+        instance_add(backend=backend, address="10.0.1.11", port=8443)
         rule_create(domain_id=self.domain.id, backend_id=backend.id, match_value="/")
         return config_render()["20-servers.conf"]
 
@@ -793,3 +795,74 @@ class AcmeChallengePassthroughTests(TestCase):
     def test_the_challenge_path_stays_on_plain_http(self):
         config = self._render(acme_challenge_passthrough=True)
         self.assertIn("proxy_set_header X-Forwarded-Proto http;", config)
+
+
+class SchemePortConflictTests(TestCase):
+    """
+    The misconfiguration that reads as a routing fault.
+
+    A backend set to HTTP on port 443 makes Nginx open a cleartext socket to a
+    TLS port. A router on the other end answers with its catch-all 404, which
+    looks like "no route for this host" and sends the operator looking in the
+    wrong place entirely.
+    """
+
+    def test_http_backend_rejects_port_443(self):
+        backend = backend_create(name="plain-backend")
+        with self.assertRaises(ValidationError) as caught:
+            instance_add(backend=backend, address="10.0.1.21", port=443)
+        self.assertIn("port", caught.exception.message_dict)
+
+    def test_https_backend_rejects_port_80(self):
+        backend = backend_create(name="tls-backend", scheme="https")
+        with self.assertRaises(ValidationError) as caught:
+            instance_add(backend=backend, address="10.0.1.20", port=80)
+        self.assertIn("port", caught.exception.message_dict)
+
+    def test_switching_scheme_against_an_existing_port_is_rejected(self):
+        """The edit that produced cleartext-to-443 in production."""
+        backend = backend_create(name="mirrorserver", scheme="https")
+        instance_add(backend=backend, address="10.0.1.22", port=443)
+        with self.assertRaises(ValidationError) as caught:
+            backend_update(backend=backend, data={"scheme": "http"})
+        self.assertIn("scheme", caught.exception.message_dict)
+
+    def test_ordinary_combinations_are_left_alone(self):
+        https = backend_create(name="https-backend", scheme="https")
+        instance_add(backend=https, address="10.0.1.23", port=443)
+
+        http = backend_create(name="http-backend")
+        instance_add(backend=http, address="10.0.1.24", port=80)
+        instance_add(backend=http, address="10.0.1.25", port=8443)
+        instance_add(backend=http, address="10.0.1.26", port=8080)
+
+        self.assertEqual(http.instances.count(), 3)
+
+
+class NegativeCachingTests(TestCase):
+    """A cached 404 outlives the fault that caused it."""
+
+    def setUp(self):
+        self.backend = backend_create(name="api-service")
+        instance_add(backend=self.backend, address="10.0.1.11", port=8080)
+        self.domain = domain_create(name="api.example.com")
+        rule_create(
+            domain_id=self.domain.id,
+            backend_id=self.backend.id,
+            match_value="/",
+            cache_enabled=True,
+        )
+
+    def test_404_responses_carry_no_fallback_ttl(self):
+        """
+        Without this, a routing mistake keeps being served after it is fixed --
+        and proxy_cache_use_stale extends that well past the nominal TTL, so
+        every attempted fix looks like it did nothing.
+        """
+        config = config_render()["20-servers.conf"]
+        self.assertIn("proxy_cache_valid   200 302", config)
+        self.assertNotIn("proxy_cache_valid   404", config)
+
+    def test_successful_responses_still_have_one(self):
+        config = config_render()["20-servers.conf"]
+        self.assertIn("proxy_cache", config)

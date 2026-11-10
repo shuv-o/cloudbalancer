@@ -5,7 +5,32 @@ A Backend represents a logical service (e.g. "user-service") with one or more
 instances running on the LAN. BackendInstance represents a single running copy
 of that service at a specific host:port.
 """
+from django.core.exceptions import ValidationError
 from django.db import models
+
+
+# A port whose meaning is fixed by convention, paired with the wrong scheme, is
+# almost always a mistake -- and the symptom does not point at the cause.
+# Cleartext sent to a TLS port makes a router answer with its catch-all 404,
+# which reads as "no route for this host" rather than "wrong protocol", and a
+# gateway in front of it will happily cache that 404.
+_SCHEME_PORT_CONFLICTS = {
+    ("http", 443): (
+        "Port 443 is a TLS port, but this backend's protocol is HTTP. Nginx "
+        "would open a cleartext socket to it and the backend would reject or "
+        "misroute the request. Set the protocol to HTTPS, or change the port."
+    ),
+    ("https", 80): (
+        "Port 80 is a cleartext port, but this backend's protocol is HTTPS. "
+        "Nginx would attempt a TLS handshake against it and fail. Set the "
+        "protocol to HTTP, or change the port."
+    ),
+}
+
+
+def scheme_port_conflict(scheme: str, port: int) -> str | None:
+    """Return an explanation if this scheme and port cannot work together."""
+    return _SCHEME_PORT_CONFLICTS.get((scheme, port))
 
 
 class Backend(models.Model):
@@ -139,6 +164,18 @@ class Backend(models.Model):
     def __str__(self) -> str:
         return self.name
 
+    def clean(self):
+        """Reject a scheme that contradicts a port already configured."""
+        super().clean()
+        if self.pk is None:
+            return
+        for instance in self.instances.all():
+            message = scheme_port_conflict(self.scheme, instance.port)
+            if message:
+                raise ValidationError(
+                    {"scheme": f"{instance.address}:{instance.port} -- {message}"}
+                )
+
     @property
     def upstream_name(self) -> str:
         """Nginx-safe upstream block name."""
@@ -224,6 +261,15 @@ class BackendInstance(models.Model):
     def __str__(self) -> str:
         status = "✓" if self.is_healthy else "✗"
         return f"{self.backend.name} → {self.address}:{self.port} [{status}]"
+
+    def clean(self):
+        """Reject a port that contradicts the backend's scheme."""
+        super().clean()
+        if self.backend_id is None:
+            return
+        message = scheme_port_conflict(self.backend.scheme, self.port)
+        if message:
+            raise ValidationError({"port": message})
 
     @property
     def netloc(self) -> str:

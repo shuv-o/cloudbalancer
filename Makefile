@@ -1,4 +1,12 @@
-.PHONY: help
+# Every target is a command, not a file. Without this, a target whose name
+# matches a directory in the repo -- `deploy/` does -- is considered up to
+# date and silently does nothing.
+.PHONY: help build up down destroy restart ps logs logs-nginx logs-celery \
+    init migrate makemigrations superuser shell seed doctor update \
+    update-cached release rollback deploy config check reload cache-purge \
+    certs renew test test-local bench-up bench bench-log panel-build \
+    panel-dev panel-ca panel-cert panel-revoke panel-status \
+    bench-protection
 .DEFAULT_GOAL := help
 
 help: ## Show this help

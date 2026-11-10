@@ -2,6 +2,7 @@ import { FormEvent, useState } from "react";
 import { api } from "../lib/api";
 import { useAction, useResource } from "../lib/hooks";
 import { CacheStats, Domain, RoutingRule, TimeSeries } from "../lib/types";
+import { SeriesCaption, useSeriesSelection } from "../components/SeriesControls";
 import { bytes, compact, percent } from "../lib/format";
 import { Chart } from "../components/Chart";
 import { Empty, Field, Modal, Notice, Panel, Row, Tag, useToast } from "../components/ui";
@@ -114,10 +115,8 @@ export function Cache() {
     "/api/v1/monitoring/cache/",
     5000,
   );
-  const { data: series } = useResource<TimeSeries>(
-    "/api/v1/monitoring/series/?minutes=180&step=60s",
-    30000,
-  );
+  const { selection, controls } = useSeriesSelection(180);
+  const { data: series } = useResource<TimeSeries>(selection.path, 30000);
   const { data: rules } = useResource<RoutingRule[]>("/api/v1/routing/rules/");
   const { data: domains } = useResource<Domain[]>("/api/v1/domains/");
 
@@ -203,11 +202,26 @@ export function Cache() {
           </div>
 
           <div className="grid grid--2" style={{ marginBottom: 16 }}>
-            <Panel title="Hit ratio over time" hint="Last three hours">
+            <Panel
+              title="Hit ratio over time"
+              hint={series?.domain || "Every domain"}
+              actions={controls}
+            >
               <Chart
                 series={series?.cache_hit_ratio ?? []}
                 formatValue={(v) => `${v.toFixed(0)}%`}
-                emptyMessage="Prometheus has no cache samples for this range yet."
+                emptyMessage={
+                  series
+                    ? `Nothing cacheable was served for ${
+                        series.domain || "the gateway"
+                      } over this range.`
+                    : "Loading…"
+                }
+              />
+              <SeriesCaption
+                step={series?.step}
+                window={series?.rate_window}
+                domain={series?.domain}
               />
             </Panel>
 

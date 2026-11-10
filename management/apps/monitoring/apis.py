@@ -1,8 +1,12 @@
 """Monitoring API views — everything the dashboard reads."""
+from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.domains.models import Domain
 from apps.monitoring.selectors import (
+    SERIES_RANGES,
+    SeriesFilterError,
     backend_health_grid,
     cache_stats,
     dashboard_summary,
@@ -59,16 +63,47 @@ class HealthGridApi(APIView):
 
 class TimeSeriesApi(APIView):
     """
-    GET /api/v1/monitoring/series/?minutes=60&step=30s  — chart data
+    GET /api/v1/monitoring/series/?minutes=1440&domain=example.com  — chart data
+
+    The step is not a parameter. It follows from the range: Prometheus refuses
+    a range query asking for more than 11,000 points, so a caller free to pick
+    both would mostly be free to pick a 422. The step actually used comes back
+    in the response, for the chart to label itself with.
     """
 
     def get(self, request):
         try:
-            minutes = min(int(request.query_params.get("minutes", 60)), 60 * 24 * 7)
-        except ValueError:
+            minutes = int(request.query_params.get("minutes", 60))
+        except (TypeError, ValueError):
             minutes = 60
-        step = request.query_params.get("step", "30s")
-        return Response(traffic_series(minutes=minutes, step=step))
+
+        domain = (request.query_params.get("domain") or "").strip()
+
+        try:
+            return Response(traffic_series(minutes=minutes, host=domain or None))
+        except SeriesFilterError as exc:
+            # A domain that cannot be charted is a bad request, not an empty
+            # one. Returning no data would be indistinguishable from a domain
+            # that is simply quiet.
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ChartableDomainsApi(APIView):
+    """
+    GET /api/v1/monitoring/series/domains/  — what the domain picker offers
+
+    Every configured domain, whether or not it has traffic yet. A domain
+    missing from the list because nobody has visited it reads as a domain that
+    was never set up.
+    """
+
+    def get(self, request):
+        return Response({
+            "domains": list(
+                Domain.objects.order_by("name").values_list("name", flat=True)
+            ),
+            "ranges": SERIES_RANGES,
+        })
 
 
 class OverviewApi(APIView):

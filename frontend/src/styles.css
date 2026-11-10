@@ -1248,3 +1248,63 @@ input.input--bad {
   height: 1px;
   background: var(--line);
 }
+
+/* ---------------------------------------------------------------------------
+   Chart scope controls — the domain and range pickers above the time series.
+
+   Deliberately quiet. They sit between a page heading and the charts they
+   govern, and anything with the weight of a primary control there reads as an
+   action rather than a filter.
+   --------------------------------------------------------------------------- */
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 26px 0 6px;
+}
+
+.section-head h2 {
+  font-size: var(--step-1);
+  margin: 0;
+}
+
+.series-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.select--compact {
+  width: auto;
+  min-width: 9.5rem;
+  max-width: 100%;
+  padding: 5px 9px;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+
+.select--compact:focus {
+  color: var(--text);
+}
+
+/* States what the chart below is actually drawn from. A year at one point per
+   day hides an afternoon, and a reader has to know that before trusting a
+   flat line. */
+.series-caption {
+  margin: 0 0 12px;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+}
+
+@media (max-width: 640px) {
+  .series-controls {
+    width: 100%;
+  }
+
+  .series-controls .select--compact {
+    flex: 1 1 8rem;
+  }
+}

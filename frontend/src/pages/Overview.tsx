@@ -6,6 +6,7 @@ import { bytes, compact, ms, percent, relativeTime } from "../lib/format";
 import { SignalPath } from "../components/SignalPath";
 import { Chart, ChartLegend } from "../components/Chart";
 import { Empty, Notice, Panel, Row, Tag } from "../components/ui";
+import { SeriesCaption, useSeriesSelection } from "../components/SeriesControls";
 
 /** Keeps a short rolling history of request counts for the inline bar chart. */
 function useRequestHistory(total: number | undefined, length = 12): number[] {
@@ -24,15 +25,27 @@ function useRequestHistory(total: number | undefined, length = 12): number[] {
   return history;
 }
 
+/**
+ * What a chart with no data should say.
+ *
+ * "No samples" is true and useless. Once a domain filter exists, an empty
+ * chart has a new and far more likely cause than an idle gateway -- a domain
+ * that was quiet over the range picked -- and the message has to name it, or
+ * every filtered domain looks like a broken dashboard.
+ */
+function emptyChart(series: TimeSeries | null, hint?: string): string {
+  if (!series) return "Loading…";
+  const scope = series.domain ? series.domain : "the gateway";
+  return `No traffic recorded for ${scope} over this range.${hint ? ` ${hint}` : ""}`;
+}
+
 export function Overview() {
   const { data, error, initialLoading } = useResource<OverviewData>(
     "/api/v1/monitoring/overview/",
     5000,
   );
-  const { data: series } = useResource<TimeSeries>(
-    "/api/v1/monitoring/series/?minutes=60&step=30s",
-    30000,
-  );
+  const { selection, controls } = useSeriesSelection(60);
+  const { data: series } = useResource<TimeSeries>(selection.path, 30000);
   const history = useRequestHistory(data?.traffic.total_requests);
 
   if (initialLoading) {
@@ -159,6 +172,17 @@ export function Overview() {
         history={history}
       />
 
+      <div className="section-head">
+        <h2>Over time</h2>
+        {controls}
+      </div>
+      <SeriesCaption
+        step={series?.step}
+        window={series?.rate_window}
+        domain={series?.domain}
+        upstreams={series?.upstreams}
+      />
+
       <div className="grid grid--2" style={{ marginBottom: 16 }}>
         <Panel
           title="Gateway added latency"
@@ -169,15 +193,22 @@ export function Overview() {
             unit="ms"
             threshold={{ value: 1, label: "1 ms budget" }}
             formatValue={(v) => v.toFixed(2)}
-            emptyMessage="Prometheus has no samples yet. It needs a minute of traffic before this fills in."
+            emptyMessage={emptyChart(series, "It needs a minute of traffic before this fills in.")}
           />
         </Panel>
 
-        <Panel title="Requests per second" hint="Measured across every configured domain">
+        <Panel
+          title="Requests per second"
+          hint={
+            series?.domain
+              ? `Measured on ${series.domain}`
+              : "Measured across every configured domain"
+          }
+        >
           <Chart
             series={series?.requests_per_second ?? []}
             formatValue={(v) => v.toFixed(0)}
-            emptyMessage="Prometheus has no samples yet."
+            emptyMessage={emptyChart(series)}
           />
         </Panel>
       </div>
@@ -187,7 +218,7 @@ export function Overview() {
           <Chart
             series={series?.cache_hit_ratio ?? []}
             formatValue={(v) => `${v.toFixed(0)}%`}
-            emptyMessage="No cache activity recorded yet."
+            emptyMessage={emptyChart(series, "Nothing cacheable has been served in this range.")}
           />
         </Panel>
 
@@ -195,7 +226,7 @@ export function Overview() {
           <Chart
             series={series?.upstream_latency_ms ?? []}
             formatValue={(v) => v.toFixed(1)}
-            emptyMessage="No upstream samples yet."
+            emptyMessage={emptyChart(series, "No request in this range reached a backend.")}
           />
           <ChartLegend series={series?.upstream_latency_ms ?? []} />
         </Panel>

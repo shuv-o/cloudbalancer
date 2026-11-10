@@ -13,6 +13,7 @@ upstream timing. Cache hit ratio, the number this dashboard exists to show,
 cannot be derived from it.
 """
 import logging
+import re
 from datetime import timedelta
 
 import httpx
@@ -263,6 +264,80 @@ def upstream_stats() -> dict:
 # Time series from Prometheus
 # ---------------------------------------------------------------------------
 
+class SeriesFilterError(ValueError):
+    """The caller asked for a domain that cannot be charted, with a reason."""
+
+
+# Resolution by range length: (range is at most N minutes, step, rate window).
+#
+# Prometheus refuses a range query asking for more than 11,000 points, so a
+# year at 30s -- 1,051,200 points -- is not a slow query, it is a 422. Each row
+# here lands between 120 and 400 points, which is more than a chart can draw
+# anyway.
+#
+# The rate window is four times the step, never under two minutes. A window
+# narrower than the step samples a thin slice and skips the rest: rate([2m])
+# read once a day reports whatever those two minutes held and calls it a year.
+SERIES_RESOLUTIONS = (
+    (60, "30s", "2m"),               # an hour
+    (6 * 60, "2m", "8m"),            # six hours
+    (24 * 60, "5m", "20m"),          # a day
+    (7 * 24 * 60, "30m", "2h"),      # a week
+    (31 * 24 * 60, "2h", "8h"),      # a month
+    (92 * 24 * 60, "6h", "24h"),     # a quarter
+    (366 * 24 * 60, "1d", "4d"),     # a year
+)
+
+MAX_SERIES_MINUTES = SERIES_RESOLUTIONS[-1][0]
+
+# What the range picker offers. Served to the panel rather than hard-coded in
+# it, so the longest range on offer cannot outlive what Prometheus retains.
+SERIES_RANGES = (
+    {"label": "1 hour", "minutes": 60},
+    {"label": "6 hours", "minutes": 6 * 60},
+    {"label": "24 hours", "minutes": 24 * 60},
+    {"label": "7 days", "minutes": 7 * 24 * 60},
+    {"label": "30 days", "minutes": 30 * 24 * 60},
+    {"label": "90 days", "minutes": 90 * 24 * 60},
+    {"label": "1 year", "minutes": 365 * 24 * 60},
+)
+
+# A label value is interpolated into PromQL, so it is checked rather than
+# escaped. Nothing that is not a hostname gets through, which leaves no quote
+# or brace to close the selector with.
+HOSTNAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$")
+UPSTREAM_NAME = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def resolution_for(minutes: int) -> tuple[str, str]:
+    """The step and rate window a range of this length can actually be drawn at."""
+    for limit, step, window in SERIES_RESOLUTIONS:
+        if minutes <= limit:
+            return step, window
+    return SERIES_RESOLUTIONS[-1][1], SERIES_RESOLUTIONS[-1][2]
+
+
+def upstreams_serving(host: str) -> list[str]:
+    """
+    The Nginx upstream blocks this domain's routes send traffic to.
+
+    Needed because the traffic module labels upstream counters with the
+    upstream and the backend address and nothing else -- there is no host label
+    to filter on. The link from a domain to its upstreams exists only in the
+    database, which is the same place the config generator reads it from.
+    """
+    names = (
+        RoutingRule.objects
+        .filter(domain__name=host, is_active=True)
+        .values_list("backend__name", flat=True)
+        .distinct()
+    )
+    upstreams = sorted({
+        name.replace("-", "_").replace(".", "_") for name in names if name
+    })
+    return [name for name in upstreams if UPSTREAM_NAME.match(name)]
+
+
 def _prometheus_range(query: str, *, minutes: int, step: str) -> list[dict]:
     """Run one range query and flatten it into series the charts can read."""
     end = timezone.now()
@@ -300,9 +375,13 @@ def _prometheus_range(query: str, *, minutes: int, step: str) -> list[dict]:
     return series
 
 
-def traffic_series(*, minutes: int = 60, step: str = "30s") -> dict:
+def traffic_series(
+    *,
+    minutes: int = 60,
+    host: str | None = None,
+) -> dict:
     """
-    The four series the dashboard charts.
+    The five series the dashboard charts, for every domain or for one.
 
     `gateway_added_ms` is the one worth watching. Nginx records total request
     time and upstream response time separately, so subtracting them and
@@ -310,11 +389,22 @@ def traffic_series(*, minutes: int = 60, step: str = "30s") -> dict:
     -- measured continuously, in production, with no load generator involved.
     That is the number the sub-millisecond budget is about.
 
-    Every query excludes host="*", the traffic module's own aggregate row, and
-    host="_", the catch-all server. The first would double every total; the
-    second is not a configured domain, answers without an upstream, and would
-    therefore charge its whole response time to the gateway's overhead. The
-    live per-domain table drops both for the same reasons.
+    With no `host`, every per-domain query excludes host="*", the traffic
+    module's own aggregate row, and host="_", the catch-all server. The first
+    would double every total; the second is not a configured domain, answers
+    without an upstream, and would therefore charge its whole response time to
+    the gateway's overhead. The live per-domain table drops both for the same
+    reasons.
+
+    With a `host`, two of the five change source rather than just gaining a
+    filter, because the traffic module does not label everything by vhost:
+
+      * cache moves from nginx_vts_cache_requests_total, which is per cache
+        zone and shared between domains, to nginx_vts_server_cache_total,
+        which is per vhost;
+      * upstream timings carry no host label at all, so the domain is resolved
+        to its upstreams through the routing rules first. A domain with no
+        active route has no upstream to chart, and says so.
 
     The code label is matched as a class pattern, never as code="total". The
     exporter writes one row per class -- 1xx, 2xx, 3xx, 4xx, 5xx -- and emits
@@ -323,47 +413,73 @@ def traffic_series(*, minutes: int = 60, step: str = "30s") -> dict:
     mistake does not surface as a zero. It surfaces as a blank chart, which
     looks exactly like a gateway with no traffic.
     """
+    minutes = max(1, min(int(minutes), MAX_SERIES_MINUTES))
+    step, window = resolution_for(minutes)
+
+    if host:
+        if not HOSTNAME.match(host):
+            raise SeriesFilterError(f"{host!r} is not a hostname.")
+        if not Domain.objects.filter(name=host).exists():
+            raise SeriesFilterError(f"No domain named {host} is configured.")
+        server = f'host="{host}"'
+        upstreams = upstreams_serving(host)
+        # An empty upstream selector would match every upstream, which is the
+        # opposite of filtering. Matching the empty string matches none.
+        upstream = 'upstream=~"' + ("|".join(upstreams) or "") + '"'
+        cache_metric = "nginx_vts_server_cache_total"
+        cache_scope = f'host="{host}",'
+    else:
+        server = 'host!="*",host!="_"'
+        upstreams = []
+        upstream = ""
+        cache_metric = "nginx_vts_cache_requests_total"
+        cache_scope = ""
+
+    def _range(query: str) -> list[dict]:
+        return _prometheus_range(query, minutes=minutes, step=step)
+
+    requests = (
+        f'sum(rate(nginx_vts_server_requests_total{{{server},code=~"[1-5]xx"}}[{window}]))'
+    )
+    # `or vector(0)` is not papering over a missing series. A domain served
+    # entirely from cache reaches no upstream, so the counter genuinely does
+    # not exist, and without this the gateway-overhead chart would go blank at
+    # exactly the moment the cache started working.
+    upstream_seconds = (
+        f"(sum(rate(nginx_vts_upstream_response_seconds_total{{{upstream}}}[{window}]))"
+        " or vector(0))"
+    )
+
     return {
         "range_minutes": minutes,
         "step": step,
-        "requests_per_second": _prometheus_range(
-            "sum(rate(nginx_vts_server_requests_total"
-            '{host!="*",host!="_",code=~"[1-5]xx"}[2m]))',
-            minutes=minutes, step=step,
-        ),
-        "gateway_added_ms": _prometheus_range(
+        "rate_window": window,
+        "domain": host or "",
+        "upstreams": upstreams,
+        "requests_per_second": _range(requests),
+        "gateway_added_ms": _range(
             "("
-            '  sum(rate(nginx_vts_server_request_seconds_total{host!="*",host!="_"}[2m]))'
-            "  - sum(rate(nginx_vts_upstream_response_seconds_total[2m]))"
-            ") / clamp_min("
-            "  sum(rate(nginx_vts_server_requests_total"
-            '{host!="*",host!="_",code=~"[1-5]xx"}[2m])), 1'
-            ") * 1000",
-            minutes=minutes, step=step,
+            f"sum(rate(nginx_vts_server_request_seconds_total{{{server}}}[{window}]))"
+            f" - {upstream_seconds}"
+            f") / clamp_min({requests}, 1) * 1000"
         ),
-        # Per cache zone, which is what the live figures above are counted from
-        # too. The exporter also breaks cache status down per vhost, as
-        # nginx_vts_server_cache_total -- a different question, and one the
-        # per-domain table already answers.
-        "cache_hit_ratio": _prometheus_range(
-            "sum(rate(nginx_vts_cache_requests_total"
-            '{status=~"hit|stale|revalidated"}[5m])) / clamp_min('
-            "sum(rate(nginx_vts_cache_requests_total"
-            '{status=~"hit|miss|expired|stale|revalidated"}[5m])), 1'
-            ") * 100",
-            minutes=minutes, step=step,
+        "cache_hit_ratio": _range(
+            f"sum(rate({cache_metric}"
+            f'{{{cache_scope}status=~"hit|stale|revalidated"}}[{window}]))'
+            f" / clamp_min(sum(rate({cache_metric}"
+            f'{{{cache_scope}status=~"hit|miss|expired|stale|revalidated"}}[{window}])), 1)'
+            " * 100"
         ),
-        "upstream_latency_ms": _prometheus_range(
-            "sum(rate(nginx_vts_upstream_response_seconds_total[2m])) by (upstream) / "
-            "clamp_min(sum(rate(nginx_vts_upstream_requests_total"
-            '{code=~"[1-5]xx"}[2m])) by (upstream), 1) '
-            "* 1000",
-            minutes=minutes, step=step,
+        "upstream_latency_ms": _range(
+            f"sum(rate(nginx_vts_upstream_response_seconds_total{{{upstream}}}[{window}]))"
+            " by (upstream)"
+            f" / clamp_min(sum(rate(nginx_vts_upstream_requests_total"
+            f'{{{upstream + "," if upstream else ""}code=~"[1-5]xx"}}[{window}]))'
+            " by (upstream), 1) * 1000"
         ),
-        "status_classes": _prometheus_range(
-            "sum(rate(nginx_vts_server_requests_total"
-            '{host!="*",host!="_",code=~"[2345]xx"}[2m])) by (code)',
-            minutes=minutes, step=step,
+        "status_classes": _range(
+            f'sum(rate(nginx_vts_server_requests_total{{{server},code=~"[2345]xx"}}'
+            f"[{window}])) by (code)"
         ),
     }
 

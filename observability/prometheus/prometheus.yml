@@ -25,6 +25,11 @@ scrape_configs:
 
   - job_name: django-management
     metrics_path: /metrics
+    # Three times the global interval. The control plane exports by far the
+    # most series here, and at a year of retention that cost is paid 3.15
+    # million times per series. Nothing on this job is read at finer than a
+    # two-minute rate window, so the resolution is not being used.
+    scrape_interval: 30s
     static_configs:
       - targets: ["django:8000"]
         labels:

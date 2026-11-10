@@ -271,7 +271,15 @@ services:
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
-      - --storage.tsdb.retention.time=30d
+      # A year of history, with a month of margin. The panel offers a 1-year
+      # range; retaining exactly 365d would mean the far edge of that range was
+      # being trimmed while someone looked at it.
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-400d}
+      # A ceiling, not a target. Whichever limit is reached first wins, so this
+      # is set well above the estimate (roughly 5-6 MB per series per year at a
+      # 10s scrape) to stop a runaway label from filling the disk -- not to
+      # trim history. Raise it before shortening the retention above.
+      - --storage.tsdb.retention.size=${PROMETHEUS_MAX_DISK:-24GB}
       - --web.enable-lifecycle
     expose: ["9090"]
     ports:

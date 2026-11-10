@@ -2,6 +2,7 @@ from django.urls import path
 
 from apps.monitoring.apis import (
     CacheApi,
+    ChartableDomainsApi,
     DashboardSummaryApi,
     HealthGridApi,
     OverviewApi,
@@ -18,4 +19,9 @@ urlpatterns = [
     path("upstreams/", UpstreamApi.as_view(), name="monitoring-upstreams"),
     path("health/", HealthGridApi.as_view(), name="monitoring-health"),
     path("series/", TimeSeriesApi.as_view(), name="monitoring-series"),
+    path(
+        "series/domains/",
+        ChartableDomainsApi.as_view(),
+        name="monitoring-series-domains",
+    ),
 ]

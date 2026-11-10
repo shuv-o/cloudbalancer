@@ -300,6 +300,12 @@ export interface Series {
 export interface TimeSeries {
   range_minutes: number;
   step: string;
+  /** The rate window the step was drawn from, e.g. "4d" for a year-long range. */
+  rate_window: string;
+  /** Empty when every domain is included. */
+  domain: string;
+  /** The upstreams serving `domain`; empty when no domain is selected. */
+  upstreams: string[];
   requests_per_second: Series[];
   gateway_added_ms: Series[];
   cache_hit_ratio: Series[];

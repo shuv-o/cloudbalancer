@@ -310,22 +310,34 @@ def traffic_series(*, minutes: int = 60, step: str = "30s") -> dict:
     -- measured continuously, in production, with no load generator involved.
     That is the number the sub-millisecond budget is about.
 
-    Every query excludes host="*", which is the traffic module's own aggregate
-    row; counting it alongside the real vhosts would double every total.
+    Every query excludes host="*", the traffic module's own aggregate row, and
+    host="_", the catch-all server. The first would double every total; the
+    second is not a configured domain, answers without an upstream, and would
+    therefore charge its whole response time to the gateway's overhead. The
+    live per-domain table drops both for the same reasons.
+
+    The code label is matched as a class pattern, never as code="total". The
+    exporter writes one row per class -- 1xx, 2xx, 3xx, 4xx, 5xx -- and emits
+    no aggregate row at all, so a filter on "total" selects nothing. An empty
+    selector stays empty through clamp_min() and through division, so the
+    mistake does not surface as a zero. It surfaces as a blank chart, which
+    looks exactly like a gateway with no traffic.
     """
     return {
         "range_minutes": minutes,
         "step": step,
         "requests_per_second": _prometheus_range(
-            'sum(rate(nginx_vts_server_requests_total{host!="*",code="total"}[2m]))',
+            "sum(rate(nginx_vts_server_requests_total"
+            '{host!="*",host!="_",code=~"[1-5]xx"}[2m]))',
             minutes=minutes, step=step,
         ),
         "gateway_added_ms": _prometheus_range(
             "("
-            '  sum(rate(nginx_vts_server_request_seconds_total{host!="*"}[2m]))'
+            '  sum(rate(nginx_vts_server_request_seconds_total{host!="*",host!="_"}[2m]))'
             "  - sum(rate(nginx_vts_upstream_response_seconds_total[2m]))"
             ") / clamp_min("
-            '  sum(rate(nginx_vts_server_requests_total{host!="*",code="total"}[2m])), 1'
+            "  sum(rate(nginx_vts_server_requests_total"
+            '{host!="*",host!="_",code=~"[1-5]xx"}[2m])), 1'
             ") * 1000",
             minutes=minutes, step=step,
         ),
@@ -337,12 +349,14 @@ def traffic_series(*, minutes: int = 60, step: str = "30s") -> dict:
         ),
         "upstream_latency_ms": _prometheus_range(
             "sum(rate(nginx_vts_upstream_response_seconds_total[2m])) by (upstream) / "
-            'clamp_min(sum(rate(nginx_vts_upstream_requests_total{code="total"}[2m])) by (upstream), 1) '
+            "clamp_min(sum(rate(nginx_vts_upstream_requests_total"
+            '{code=~"[1-5]xx"}[2m])) by (upstream), 1) '
             "* 1000",
             minutes=minutes, step=step,
         ),
         "status_classes": _prometheus_range(
-            'sum(rate(nginx_vts_server_requests_total{host!="*",code=~"[2345]xx"}[2m])) by (code)',
+            "sum(rate(nginx_vts_server_requests_total"
+            '{host!="*",host!="_",code=~"[2345]xx"}[2m])) by (code)',
             minutes=minutes, step=step,
         ),
     }

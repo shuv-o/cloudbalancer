@@ -102,7 +102,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "(sum(rate(nginx_vts_server_request_seconds_total{host!=\"*\"}[2m])) - sum(rate(nginx_vts_upstream_response_seconds_total[2m]))) / clamp_min(sum(rate(nginx_vts_server_requests_total{host!=\"*\",code=\"total\"}[2m])), 1) * 1000",
+          "expr": "(sum(rate(nginx_vts_server_request_seconds_total{host!=\"*\"}[2m])) - sum(rate(nginx_vts_upstream_response_seconds_total[2m]))) / clamp_min(sum(rate(nginx_vts_server_requests_total{host!=\"*\",code=~\"[1-5]xx\"}[2m])), 1) * 1000",
           "legendFormat": "",
           "refId": "A"
         }
@@ -156,7 +156,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(nginx_vts_server_requests_total{host!=\"*\",code=\"total\"}[2m]))",
+          "expr": "sum(rate(nginx_vts_server_requests_total{host!=\"*\",code=~\"[1-5]xx\"}[2m]))",
           "legendFormat": "",
           "refId": "A"
         }
@@ -325,7 +325,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "(sum(rate(nginx_vts_server_request_seconds_total{host!=\"*\"}[2m])) - sum(rate(nginx_vts_upstream_response_seconds_total[2m]))) / clamp_min(sum(rate(nginx_vts_server_requests_total{host!=\"*\",code=\"total\"}[2m])), 1) * 1000",
+          "expr": "(sum(rate(nginx_vts_server_request_seconds_total{host!=\"*\"}[2m])) - sum(rate(nginx_vts_upstream_response_seconds_total[2m]))) / clamp_min(sum(rate(nginx_vts_server_requests_total{host!=\"*\",code=~\"[1-5]xx\"}[2m])), 1) * 1000",
           "legendFormat": "added ms",
           "refId": "A"
         }
@@ -378,7 +378,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(nginx_vts_upstream_response_seconds_total[2m])) by (upstream) / clamp_min(sum(rate(nginx_vts_upstream_requests_total{code=\"total\"}[2m])) by (upstream), 1) * 1000",
+          "expr": "sum(rate(nginx_vts_upstream_response_seconds_total[2m])) by (upstream) / clamp_min(sum(rate(nginx_vts_upstream_requests_total{code=~\"[1-5]xx\"}[2m])) by (upstream), 1) * 1000",
           "legendFormat": "{{upstream}}",
           "refId": "A"
         }
@@ -443,7 +443,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(nginx_vts_server_requests_total{host!=\"*\",code=\"total\"}[2m])) by (host)",
+          "expr": "sum(rate(nginx_vts_server_requests_total{host!=\"*\",code=~\"[1-5]xx\"}[2m])) by (host)",
           "legendFormat": "{{host}}",
           "refId": "A"
         }
@@ -902,7 +902,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(nginx_vts_upstream_requests_total{code=\"total\"}[2m])) by (upstream, backend)",
+          "expr": "sum(rate(nginx_vts_upstream_requests_total{code=~\"[1-5]xx\"}[2m])) by (upstream, backend)",
           "legendFormat": "{{upstream}} / {{backend}}",
           "refId": "A"
         }

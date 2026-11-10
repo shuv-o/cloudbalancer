@@ -244,10 +244,13 @@ server {
     ssl_session_cache   shared:TLS{{ domain.slug }}:10m;
     ssl_session_timeout 1d;
     ssl_session_tickets off;
-{% if domain.chain_path %}
+{% if domain.ocsp_chain_path %}
+    # Emitted only when the leaf certificate names an OCSP responder. Let's
+    # Encrypt removed that URL in 2025, and Nginx warns on every single reload
+    # about an ssl_stapling directive it is then going to ignore.
     ssl_stapling            on;
     ssl_stapling_verify     on;
-    ssl_trusted_certificate {{ domain.chain_path }};
+    ssl_trusted_certificate {{ domain.ocsp_chain_path }};
 {% endif %}
 
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;

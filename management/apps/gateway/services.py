@@ -27,6 +27,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from apps.gateway.nginx_values import comment as nginx_comment
 from apps.gateway.nginx_values import quoted as nginx_quoted
+from apps.gateway.ocsp import has_ocsp_responder
 
 from apps.backends.models import Backend
 from apps.domains.models import Domain
@@ -293,7 +294,11 @@ def render_panel() -> str:
                 "domain": domain.name,
                 "cert_path": domain.ssl_cert_path,
                 "key_path": domain.ssl_key_path,
-                "chain_path": certificate.chain_path if certificate else "",
+                "ocsp_chain_path": (
+                    certificate.chain_path
+                    if certificate and has_ocsp_responder(domain.ssl_cert_path)
+                    else ""
+                ),
                 "allowlist": policy.normalised_allowlist,
                 "require_mtls": policy.require_mtls,
                 "mtls_ca_path": policy.mtls_ca_path,
@@ -372,7 +377,11 @@ def render_servers(*, rules_by_domain: dict[int, list[dict]], domains: dict[int,
             "ssl_enabled": ssl_ready,
             "ssl_cert_path": domain.ssl_cert_path,
             "ssl_key_path": domain.ssl_key_path,
-            "chain_path": certificate.chain_path if certificate else "",
+            "ocsp_chain_path": (
+                certificate.chain_path
+                if certificate and has_ocsp_responder(domain.ssl_cert_path)
+                else ""
+            ),
             "cert_issuer_label": (
                 certificate.get_issuer_display() if certificate else "manual configuration"
             ),

@@ -88,10 +88,13 @@ server {
     ssl_session_cache   shared:TLSpanel:10m;
     ssl_session_timeout 1d;
     ssl_session_tickets off;
-{% if panel.chain_path %}
+{% if panel.ocsp_chain_path %}
+    # Emitted only when the leaf certificate names an OCSP responder. Let's
+    # Encrypt removed that URL in 2025, and Nginx warns on every single reload
+    # about an ssl_stapling directive it is then going to ignore.
     ssl_stapling            on;
     ssl_stapling_verify     on;
-    ssl_trusted_certificate {{ panel.chain_path }};
+    ssl_trusted_certificate {{ panel.ocsp_chain_path }};
 {% endif %}
 
 {% if panel.require_mtls %}

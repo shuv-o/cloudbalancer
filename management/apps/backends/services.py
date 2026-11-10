@@ -1,12 +1,14 @@
 """
 Backend services — write operations.
 """
+import socket
 import time
 
 import httpx
 from django.db import transaction
 from django.utils import timezone as django_tz
 
+from apps.backends.health import matches as status_matches
 from apps.backends.models import Backend, BackendInstance
 from common.services import model_update
 from common.types import HealthCheckResult
@@ -25,6 +27,8 @@ def backend_create(
     keepalive_requests: int = 1000,
     keepalive_timeout: int = 60,
     health_check_enabled: bool = True,
+    health_check_method: str = "http",
+    health_check_expect: str = "200-399",
     health_check_path: str = "/health",
     health_check_host: str = "",
     health_check_interval: int = 10,
@@ -47,6 +51,8 @@ def backend_create(
         keepalive_requests=keepalive_requests,
         keepalive_timeout=keepalive_timeout,
         health_check_enabled=health_check_enabled,
+        health_check_method=health_check_method,
+        health_check_expect=health_check_expect,
         health_check_path=health_check_path,
         health_check_host=health_check_host,
         health_check_interval=health_check_interval,
@@ -73,6 +79,8 @@ def backend_update(*, backend: Backend, data: dict) -> Backend:
         "lb_method",
         "keepalive_connections",
         "health_check_enabled",
+        "health_check_method",
+        "health_check_expect",
         "health_check_path",
         "health_check_host",
         "health_check_interval",
@@ -140,6 +148,8 @@ def instance_delete(*, instance: BackendInstance) -> None:
 def health_check_instance(
     *,
     instance: BackendInstance,
+    method: str = "http",
+    expect: str = "200-399",
     scheme: str = "http",
     host: str = "",
     path: str = "/health",
@@ -159,33 +169,50 @@ def health_check_instance(
     instance on every blip would turn one flapping backend into a continuous
     stream of gateway reloads.
     """
-    # The scheme has to follow the backend's own. Probing https://...:443 over
-    # plaintext is the same mistake that once sent live traffic to a TLS port,
-    # and here it produces a permanently failing probe against a healthy host.
-    url = f"{scheme}://{instance.address}:{instance.port}{path}"
-
-    # Addressed by IP, a reverse proxy that routes on hostname matches no route
-    # and answers 404 no matter how healthy the service behind it is. The Host
-    # header is what makes the probe ask the question the operator meant.
-    headers = {"Host": host} if host else None
-
     start = time.monotonic()
 
     try:
-        # verify is off by default because the probe connects to an IP, so the
-        # certificate legitimately will not match the name on it.
-        with httpx.Client(timeout=timeout, verify=verify) as client:
-            response = client.get(url, headers=headers)
-        elapsed_ms = (time.monotonic() - start) * 1000
-        is_healthy = 200 <= response.status_code < 400
+        if method == Backend.HealthCheckMethod.TCP:
+            # No request, no status. Something is listening or it is not --
+            # which is the only question that can be asked of a backend with
+            # no health endpoint, or one that does not speak HTTP.
+            socket.create_connection(
+                (instance.address, instance.port), timeout=timeout
+            ).close()
+            elapsed_ms = (time.monotonic() - start) * 1000
+            result = HealthCheckResult(
+                address=instance.address,
+                port=instance.port,
+                is_healthy=True,
+                status_code=None,
+                response_ms=round(elapsed_ms, 2),
+            )
+        else:
+            # The scheme has to follow the backend's own. Probing an https
+            # backend over plaintext is the same mistake that once sent live
+            # traffic to a TLS port, and here it produces a permanently
+            # failing probe against a healthy host.
+            url = f"{scheme}://{instance.address}:{instance.port}{path}"
 
-        result = HealthCheckResult(
-            address=instance.address,
-            port=instance.port,
-            is_healthy=is_healthy,
-            status_code=response.status_code,
-            response_ms=round(elapsed_ms, 2),
-        )
+            # Addressed by IP, a reverse proxy that routes on hostname matches
+            # no route and answers 404 however healthy the service behind it
+            # is. The Host header makes the probe ask the question the
+            # operator meant.
+            headers = {"Host": host} if host else None
+
+            # verify is off by default because the probe connects to an IP, so
+            # the certificate legitimately will not match the name on it.
+            with httpx.Client(timeout=timeout, verify=verify) as client:
+                response = client.get(url, headers=headers)
+            elapsed_ms = (time.monotonic() - start) * 1000
+
+            result = HealthCheckResult(
+                address=instance.address,
+                port=instance.port,
+                is_healthy=status_matches(expect, response.status_code),
+                status_code=response.status_code,
+                response_ms=round(elapsed_ms, 2),
+            )
     except Exception as exc:
         elapsed_ms = (time.monotonic() - start) * 1000
         result = HealthCheckResult(
@@ -251,6 +278,8 @@ def health_check_backend(*, backend: Backend) -> list[HealthCheckResult]:
     return [
         health_check_instance(
             instance=inst,
+            method=backend.health_check_method,
+            expect=backend.health_check_expect,
             scheme=backend.scheme,
             host=backend.health_check_host,
             path=backend.health_check_path,

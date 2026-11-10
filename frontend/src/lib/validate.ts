@@ -195,3 +195,43 @@ export function cidr(value: string): Invalid {
 
   return `'${text}' is not an address or range. Use 203.0.113.4 or 203.0.113.0/24.`;
 }
+
+/**
+ * A list of HTTP status codes or ranges: "200-399", "200,404", "200-299,404".
+ *
+ * Mirrors apps/backends/health.py. The wording is deliberately identical to
+ * the server's, so a value the form accepts and the API rejects reads as the
+ * same sentence rather than two different ones.
+ */
+export function statusCodes(value: string): string | null {
+  const parts = (value ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  if (parts.length === 0) {
+    return "Name at least one status code that means healthy, for example '200-399' or '200,404'.";
+  }
+
+  for (const part of parts) {
+    const bounds = part.includes("-")
+      ? part.split("-").map((p) => p.trim())
+      : [part];
+
+    if (bounds.length > 2 || bounds.some((b) => !/^\d+$/.test(b))) {
+      return `'${part}' is not a status code or a range of them. Use digits, as in '200', '200-399' or '200,301,404'.`;
+    }
+
+    const numbers = bounds.map(Number);
+    for (const code of numbers) {
+      if (code < 100 || code > 599) {
+        return `${code} is not an HTTP status code. They run from 100 to 599.`;
+      }
+    }
+    if (numbers.length === 2 && numbers[0] > numbers[1]) {
+      return `'${part}' runs backwards. Write the lower code first, as '${numbers[1]}-${numbers[0]}'.`;
+    }
+  }
+
+  return null;
+}

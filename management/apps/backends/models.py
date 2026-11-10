@@ -8,6 +8,7 @@ of that service at a specific host:port.
 from django.core.exceptions import ValidationError
 from django.db import models
 
+from apps.backends.health import validate_expected
 from common.validators import (
     validate_config_path,
     validate_hostname,
@@ -129,6 +130,30 @@ class Backend(models.Model):
 
     # Health checking
     health_check_enabled = models.BooleanField(default=True)
+
+    class HealthCheckMethod(models.TextChoices):
+        HTTP = "http", "Make a request"
+        TCP = "tcp", "Open a connection"
+
+    health_check_method = models.CharField(
+        max_length=8,
+        choices=HealthCheckMethod.choices,
+        default=HealthCheckMethod.HTTP,
+        help_text=(
+            "'Open a connection' only checks that something is listening on "
+            "the port. Use it when the backend has no health endpoint, or "
+            "does not speak HTTP at all."
+        ),
+    )
+    health_check_expect = models.CharField(
+        max_length=64,
+        default="200-399",
+        help_text=(
+            "Status codes that count as healthy: single codes, ranges, or a "
+            "mix — '200-399', '200,404', '200-299,404'. A reverse proxy or an "
+            "app with no /health route answers 404 while working perfectly."
+        ),
+    )
     health_check_path = models.CharField(
         max_length=255,
         default="/health",
@@ -192,6 +217,11 @@ class Backend(models.Model):
         validate_sni_name(self.tls_server_name)
         if self.health_check_host:
             validate_hostname(self.health_check_host)
+        if self.health_check_method == self.HealthCheckMethod.HTTP:
+            try:
+                validate_expected(self.health_check_expect)
+            except ValidationError as exc:
+                raise ValidationError({"health_check_expect": exc.messages}) from exc
         validate_range(
             self.keepalive_connections, low=0, high=10000,
             label="keepalive connections",

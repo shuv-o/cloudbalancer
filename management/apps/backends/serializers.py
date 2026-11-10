@@ -73,6 +73,22 @@ class BackendInputSerializer(serializers.Serializer):
 
     def validate_health_check_host(self, value: str) -> str:
         return value.strip().lower()
+
+    health_check_method = serializers.CharField(
+        required=False, allow_blank=True, default="http"
+    )
+
+    def validate_health_check_method(self, value: str) -> str:
+        # An untouched form field arrives blank; that means "unchanged",
+        # not "invalid".
+        return value.strip() or "http"
+    health_check_expect = serializers.CharField(
+        required=False, allow_blank=True, default="200-399"
+    )
+
+    def validate_health_check_expect(self, value: str) -> str:
+        # Blank means "whatever the default is", the same way the path does.
+        return value.strip() or "200-399"
     health_check_interval = serializers.IntegerField(default=10, min_value=1)
     health_check_timeout = serializers.IntegerField(default=5, min_value=1)
     is_active = serializers.BooleanField(required=False, default=True)
@@ -115,6 +131,7 @@ class BackendOutputSerializer(serializers.ModelSerializer):
             "keepalive_connections", "keepalive_requests", "keepalive_timeout",
             "drain_unhealthy", "unhealthy_threshold", "healthy_threshold",
             "health_check_enabled", "health_check_path", "health_check_host",
+            "health_check_method", "health_check_expect",
             "health_check_interval", "health_check_timeout",
             "is_active", "created_at", "updated_at",
             "instances", "healthy_instance_count", "total_instance_count",

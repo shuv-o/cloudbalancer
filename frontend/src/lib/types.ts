@@ -78,6 +78,8 @@ export interface Backend {
   health_check_enabled: boolean;
   health_check_path: string;
   health_check_host: string;
+  health_check_method: string;
+  health_check_expect: string;
   health_check_interval: number;
   health_check_timeout: number;
   is_active: boolean;

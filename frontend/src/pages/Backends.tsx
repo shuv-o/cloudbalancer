@@ -50,11 +50,26 @@ interface DraftBackend {
   health_check_enabled: boolean;
   health_check_path: string;
   health_check_host: string;
+  health_check_method: string;
+  health_check_expect: string;
   health_check_timeout: number;
   drain_unhealthy: boolean;
   unhealthy_threshold: number;
   healthy_threshold: number;
   is_active: boolean;
+}
+
+/** "200-399, 404" as something a sentence can contain. */
+function describeCodes(spec: string): string {
+  const parts = spec
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => (p.includes("-") ? p.replace("-", "\u2013") : p));
+
+  if (parts.length === 0) return "anything";
+  if (parts.length === 1) return parts[0];
+  return `${parts.slice(0, -1).join(", ")} or ${parts[parts.length - 1]}`;
 }
 
 const BLANK: DraftBackend = {
@@ -70,6 +85,8 @@ const BLANK: DraftBackend = {
   health_check_enabled: true,
   health_check_path: "/health",
   health_check_host: "",
+  health_check_method: "http",
+  health_check_expect: "200-399",
   health_check_timeout: 5,
   drain_unhealthy: false,
   unhealthy_threshold: 3,
@@ -122,13 +139,22 @@ function BackendForm({
     (!draft.health_check_enabled ? 1 : 0) +
     (draft.health_check_path !== "/health" ? 1 : 0) +
     (draft.health_check_host ? 1 : 0) +
+    (draft.health_check_method !== "http" ? 1 : 0) +
+    (draft.health_check_expect !== "200-399" ? 1 : 0) +
     (draft.drain_unhealthy ? 1 : 0);
 
   const hostProblem = draft.health_check_host
     ? validate.hostname(draft.health_check_host)
     : null;
 
-  const blocked = !!(nameProblem || sniProblem || caProblem || timingProblem || hostProblem);
+  const expectProblem =
+    draft.health_check_enabled && draft.health_check_method === "http"
+      ? validate.statusCodes(draft.health_check_expect)
+      : null;
+
+  const blocked = !!(
+    nameProblem || sniProblem || caProblem || timingProblem || hostProblem || expectProblem
+  );
 
   return (
     <Modal
@@ -312,39 +338,76 @@ function BackendForm({
 
           {draft.health_check_enabled && (
             <>
-              <div className="row-2">
-                <Validated
-                  label="Probe path"
-                  value={draft.health_check_path}
-                  mono
-                  check={(v) => (v ? validate.matchValue(v, false) : null)}
-                  onChange={(v) => setDraft({ ...draft, health_check_path: v })}
-                />
-                <Field
-                  label="Give up after (seconds)"
-                  error={timingProblem ?? undefined}
+              <Field
+                label="How to check"
+                help={
+                  draft.health_check_method === "tcp"
+                    ? "Opens a connection to the port and closes it. Nothing is requested, so nothing can answer wrongly."
+                    : "Requests a path and compares the status code against the list below."
+                }
+              >
+                <select
+                  className="input"
+                  value={draft.health_check_method}
+                  onChange={(e) =>
+                    setDraft({ ...draft, health_check_method: e.target.value })
+                  }
                 >
-                  <input
-                    className={`input${timingProblem ? " input--bad" : ""}`}
-                    type="number"
-                    min={1}
-                    value={draft.health_check_timeout}
-                    onChange={(e) =>
-                      setDraft({ ...draft, health_check_timeout: Number(e.target.value) })
-                    }
-                  />
-                </Field>
-              </div>
+                  <option value="http">Make a request</option>
+                  <option value="tcp">Just open a connection</option>
+                </select>
+              </Field>
 
-              <Validated
-                label="Send this Host header"
-                value={draft.health_check_host}
-                mono
-                placeholder="leave empty unless the instance routes on hostname"
-                help="A reverse proxy — Traefik, Caddy, another Nginx — picks the site from the Host header. Probed by IP it matches nothing and answers 404 however healthy the service is. Put the hostname this backend serves here."
-                check={(v) => (v ? validate.hostname(v) : null)}
-                onChange={(v) => setDraft({ ...draft, health_check_host: v })}
-              />
+              {draft.health_check_method === "http" && (
+                <>
+                  <div className="row-2">
+                    <Validated
+                      label="Probe path"
+                      value={draft.health_check_path}
+                      mono
+                      check={(v) => (v ? validate.matchValue(v, false) : null)}
+                      onChange={(v) => setDraft({ ...draft, health_check_path: v })}
+                    />
+                    <Validated
+                      label="Healthy status codes"
+                      value={draft.health_check_expect}
+                      mono
+                      placeholder="200-399"
+                      help="Single codes, ranges, or both: 200-399, or 200,404. An app with no /health route answers 404 while working perfectly."
+                      check={(v) => validate.statusCodes(v)}
+                      onChange={(v) => setDraft({ ...draft, health_check_expect: v })}
+                    />
+                  </div>
+
+                  <Validated
+                    label="Send this Host header"
+                    value={draft.health_check_host}
+                    mono
+                    placeholder="leave empty unless the instance routes on hostname"
+                    help="A reverse proxy — Traefik, Caddy, another Nginx — picks the site from the Host header. Probed by IP it matches nothing and answers 404 however healthy the service is. Put the hostname this backend serves here."
+                    check={(v) => (v ? validate.hostname(v) : null)}
+                    onChange={(v) => setDraft({ ...draft, health_check_host: v })}
+                  />
+                </>
+              )}
+
+              <Field label="Give up after (seconds)" error={timingProblem ?? undefined}>
+                <input
+                  className={`input${timingProblem ? " input--bad" : ""}`}
+                  type="number"
+                  min={1}
+                  value={draft.health_check_timeout}
+                  onChange={(e) =>
+                    setDraft({ ...draft, health_check_timeout: Number(e.target.value) })
+                  }
+                />
+              </Field>
+
+              <Outcome>
+                {draft.health_check_method === "tcp"
+                  ? `An instance counts as up when a connection to its port opens within ${draft.health_check_timeout} seconds.`
+                  : `An instance counts as up when ${draft.health_check_path || "/health"} answers ${describeCodes(draft.health_check_expect)} within ${draft.health_check_timeout} seconds${draft.health_check_host ? `, asked as ${draft.health_check_host}` : ""}.`}
+              </Outcome>
 
               <Check
                 label="Take failing instances out of rotation"
@@ -705,7 +768,16 @@ export function Backends() {
                         </div>
 
                         <div className="row__num">
-                          {instance.last_health_status_code ?? "—"}
+                          {/* A connection check has no status to report. "open"
+                              says the probe succeeded; an em dash would read as
+                              "never probed", which is a different thing. */}
+                          {instance.last_health_status_code ??
+                            (backend.health_check_method === "tcp" &&
+                            instance.last_health_check
+                              ? instance.is_healthy
+                                ? "open"
+                                : "shut"
+                              : "—")}
                         </div>
                         <div className="row__num">{ms(instance.last_health_response_ms, 1)}</div>
                         <div
@@ -763,6 +835,8 @@ export function Backends() {
             health_check_enabled: editingBackend.health_check_enabled,
             health_check_path: editingBackend.health_check_path,
             health_check_host: editingBackend.health_check_host ?? "",
+            health_check_method: editingBackend.health_check_method ?? "http",
+            health_check_expect: editingBackend.health_check_expect ?? "200-399",
             health_check_timeout: editingBackend.health_check_timeout,
             drain_unhealthy: editingBackend.drain_unhealthy,
             unhealthy_threshold: editingBackend.unhealthy_threshold,

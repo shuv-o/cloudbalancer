@@ -341,9 +341,15 @@ def traffic_series(*, minutes: int = 60, step: str = "30s") -> dict:
             ") * 1000",
             minutes=minutes, step=step,
         ),
+        # Per cache zone, which is what the live figures above are counted from
+        # too. The exporter also breaks cache status down per vhost, as
+        # nginx_vts_server_cache_total -- a different question, and one the
+        # per-domain table already answers.
         "cache_hit_ratio": _prometheus_range(
-            'sum(rate(nginx_vts_cache_total{status="hit"}[5m])) / clamp_min('
-            'sum(rate(nginx_vts_cache_total{status=~"hit|miss|expired|stale|revalidated"}[5m])), 1'
+            "sum(rate(nginx_vts_cache_requests_total"
+            '{status=~"hit|stale|revalidated"}[5m])) / clamp_min('
+            "sum(rate(nginx_vts_cache_requests_total"
+            '{status=~"hit|miss|expired|stale|revalidated"}[5m])), 1'
             ") * 100",
             minutes=minutes, step=step,
         ),

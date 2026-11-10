@@ -3,7 +3,21 @@ import { api } from "../lib/api";
 import { useAction, useResource } from "../lib/hooks";
 import { AcmeAccount, Certificate, Domain } from "../lib/types";
 import { dateTime, expiryPhrase, relativeTime } from "../lib/format";
-import { Check, Empty, Field, Modal, Notice, Panel, Row, Tag, useToast } from "../components/ui";
+import {
+  Advanced,
+  Check,
+  Empty,
+  Field,
+  Modal,
+  Notice,
+  Outcome,
+  Panel,
+  Row,
+  Tag,
+  Validated,
+  useToast,
+} from "../components/ui";
+import * as validate from "../lib/validate";
 
 const DIRECTORIES = [
   {
@@ -58,7 +72,7 @@ function AccountForm({ onClose, onSaved }: { onClose: () => void; onSaved: () =>
           <button
             className="btn btn--primary"
             form="account-form"
-            disabled={busy || !draft.email || !draft.agreed_to_tos}
+            disabled={busy || !!validate.email(draft.email) || !draft.agreed_to_tos}
           >
             {busy ? "Registering…" : "Register"}
           </button>
@@ -86,22 +100,36 @@ function AccountForm({ onClose, onSaved }: { onClose: () => void; onSaved: () =>
           </select>
         </Field>
 
-        <Field
+        <Validated
           label="Contact address"
           help="The authority emails this address before a certificate expires."
-          error={error?.fields.email?.[0]}
-        >
-          <input
-            className="input"
-            type="email"
-            value={draft.email}
-            placeholder="ops@example.com"
-            onChange={(e) => setDraft({ ...draft, email: e.target.value })}
-            required
-          />
-        </Field>
+          value={draft.email}
+          placeholder="ops@example.com"
+          type="email"
+          check={validate.email}
+          onChange={(v) => setDraft({ ...draft, email: v })}
+        />
+
+        <Outcome>
+          {validate.email(draft.email) === null ? (
+            <>
+              Certificates will be requested from <b>{directory?.label}</b> using{" "}
+              <span className="mono">{draft.email.trim()}</span>
+              {draft.is_default ? ", and this becomes the account new requests use." : "."}
+            </>
+          ) : (
+            <span className="outcome--empty">
+              Add the address the authority should warn before a certificate expires.
+            </span>
+          )}
+        </Outcome>
 
         {needsEab && (
+          <Advanced
+            label="External account binding"
+            changed={(draft.external_account_kid ? 1 : 0) + (draft.external_account_hmac ? 1 : 0)}
+            defaultOpen
+          >
           <div className="row-2">
             <Field label="Key ID">
               <input
@@ -118,6 +146,7 @@ function AccountForm({ onClose, onSaved }: { onClose: () => void; onSaved: () =>
               />
             </Field>
           </div>
+          </Advanced>
         )}
 
         <Check
@@ -167,6 +196,8 @@ function RequestForm({
   });
 
   const domain = domains.find((d) => d.id === domainId);
+  const extraNames = extra.split("\n").map((n) => n.trim()).filter(Boolean);
+  const extraProblem = validate.hostnameList(extra);
 
   return (
     <Modal
@@ -178,7 +209,7 @@ function RequestForm({
           <button className="btn" type="button" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn btn--primary" form="request-form" disabled={busy || !domainId}>
+          <button className="btn btn--primary" form="request-form" disabled={busy || !domainId || !!extraProblem}>
             {busy ? "Requesting…" : "Request certificate"}
           </button>
         </>
@@ -220,18 +251,35 @@ function RequestForm({
           </select>
         </Field>
 
-        <Field
-          label="Also cover these names"
-          help="One per line, e.g. a www alias. Every name must point at this gateway."
-        >
-          <textarea
-            className="textarea textarea--mono"
-            style={{ minHeight: 70 }}
-            value={extra}
-            placeholder={domain ? `www.${domain.name}` : ""}
-            onChange={(e) => setExtra(e.target.value)}
-          />
-        </Field>
+        <Outcome>
+          {domain ? (
+            <>
+              One certificate covering <span className="mono">{domain.name}</span>
+              {extraNames.length
+                ? ` and ${extraNames.length} other name${extraNames.length === 1 ? "" : "s"}`
+                : ""}
+              , renewed automatically from then on.
+            </>
+          ) : (
+            <span className="outcome--empty">Choose the hostname to cover.</span>
+          )}
+        </Outcome>
+
+        <Advanced label="Cover more names with this certificate" changed={extraNames.length}>
+          <Field
+            label="Also cover these names"
+            help="One per line, e.g. a www alias. Every name must point at this gateway, or the whole request fails."
+            error={validate.hostnameList(extra) ?? undefined}
+          >
+            <textarea
+              className={`textarea textarea--mono${validate.hostnameList(extra) ? " input--bad" : ""}`}
+              style={{ minHeight: 70 }}
+              value={extra}
+              placeholder={domain ? `www.${domain.name}` : ""}
+              onChange={(e) => setExtra(e.target.value)}
+            />
+          </Field>
+        </Advanced>
 
         <Notice>
           <span>
@@ -270,6 +318,10 @@ function ImportForm({
     onClose();
   });
 
+  // Checked only once something has been pasted: an empty box is not yet wrong.
+  const certProblem = validate.pem(draft.cert_pem, { kind: "certificate" });
+  const keyProblem = validate.pem(draft.key_pem, { kind: "key" });
+
   return (
     <Modal
       title="Upload a certificate"
@@ -284,7 +336,7 @@ function ImportForm({
           <button
             className="btn btn--primary"
             form="import-form"
-            disabled={busy || !draft.cert_pem || !draft.key_pem}
+            disabled={busy || !!certProblem || !!keyProblem}
           >
             {busy ? "Storing…" : "Store certificate"}
           </button>
@@ -315,9 +367,10 @@ function ImportForm({
         <Field
           label="Certificate chain"
           help="The certificate followed by any intermediates, in PEM form."
+          error={draft.cert_pem ? (certProblem ?? undefined) : undefined}
         >
           <textarea
-            className="textarea textarea--mono"
+            className={`textarea textarea--mono${draft.cert_pem && certProblem ? " input--bad" : ""}`}
             value={draft.cert_pem}
             placeholder="-----BEGIN CERTIFICATE-----"
             onChange={(e) => setDraft({ ...draft, cert_pem: e.target.value })}
@@ -325,15 +378,36 @@ function ImportForm({
           />
         </Field>
 
-        <Field label="Private key" help="Unencrypted PEM. It is written with owner-only permissions.">
+        <Field
+          label="Private key"
+          help="Unencrypted PEM. It is written with owner-only permissions."
+          error={draft.key_pem ? (keyProblem ?? undefined) : undefined}
+        >
           <textarea
-            className="textarea textarea--mono"
+            className={`textarea textarea--mono${draft.key_pem && keyProblem ? " input--bad" : ""}`}
             value={draft.key_pem}
             placeholder="-----BEGIN PRIVATE KEY-----"
             onChange={(e) => setDraft({ ...draft, key_pem: e.target.value })}
             required
           />
         </Field>
+
+        <Outcome>
+          {!certProblem && !keyProblem ? (
+            <>
+              This certificate replaces whatever{" "}
+              <span className="mono">
+                {domains.find((d) => d.id === draft.domain_id)?.name ?? "the hostname"}
+              </span>{" "}
+              is serving now, at the next deploy.
+            </>
+          ) : (
+            <span className="outcome--empty">
+              Paste both PEM blocks. Use this only for a certificate you were given — a
+              hostname that resolves here can get one automatically instead.
+            </span>
+          )}
+        </Outcome>
 
         <Notice tone="warn">
           <span>

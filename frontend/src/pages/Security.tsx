@@ -4,16 +4,20 @@ import { useAction, useResource } from "../lib/hooks";
 import { Domain } from "../lib/types";
 import { dateTime, relativeTime } from "../lib/format";
 import {
+  Advanced,
   Check,
   Empty,
   Field,
   Modal,
   Notice,
+  Outcome,
   Panel,
   Row,
   Tag,
+  Validated,
   useToast,
 } from "../components/ui";
+import * as validate from "../lib/validate";
 
 interface Policy {
   panel_domain: string;
@@ -139,6 +143,12 @@ function PublishForm({
   const chosen = domains.find((d) => d.name === draft.panel_domain);
   const readyForTls = Boolean(chosen?.ssl_enabled && chosen?.certificate);
   const wideOpen = draft.is_published && draft.ip_allowlist.length === 0 && !draft.require_mtls;
+  const allowlistProblem = validate.firstProblem(
+    Object.fromEntries(draft.ip_allowlist.map((entry) => [entry, validate.cidr(entry)])),
+  );
+  const caProblem = draft.require_mtls
+    ? validate.configPath(draft.mtls_ca_path, "CA bundle path")
+    : null;
 
   return (
     <Modal
@@ -151,7 +161,7 @@ function PublishForm({
           <button className="btn" type="button" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn btn--primary" form="publish-form" disabled={busy}>
+          <button className="btn btn--primary" form="publish-form" disabled={busy || !!allowlistProblem || !!caProblem}>
             {busy ? "Saving…" : "Save and deploy"}
           </button>
         </>
@@ -201,9 +211,35 @@ function PublishForm({
           onChange={(v) => setDraft({ ...draft, is_published: v })}
         />
 
-        <h3 style={{ fontSize: "0.86rem", margin: "22px 0 10px", color: "var(--text-dim)" }}>
-          Who can connect
-        </h3>
+        <Outcome>
+          {draft.is_published ? (
+            <>
+              The panel answers at{" "}
+              <span className="mono">https://{draft.panel_domain}</span> for{" "}
+              {draft.require_mtls
+                ? "callers holding a certificate signed by your CA"
+                : draft.ip_allowlist.length
+                  ? `callers from ${draft.ip_allowlist.length} allowed ${draft.ip_allowlist.length === 1 ? "address or range" : "addresses or ranges"}`
+                  : "anyone on the internet"}
+              . The loopback port keeps working either way.
+            </>
+          ) : (
+            <>
+              The panel stays on the loopback port only. Reach it through an SSH tunnel, or
+              from the machine itself — nothing answers from the internet.
+            </>
+          )}
+        </Outcome>
+
+        <Advanced
+          label="Who can connect"
+          changed={
+            (draft.ip_allowlist.length ? 1 : 0) +
+            (draft.require_mtls ? 1 : 0) +
+            (draft.expose_django_admin ? 1 : 0)
+          }
+          defaultOpen={draft.is_published}
+        >
 
         <Field
           label="Allowed addresses"
@@ -221,6 +257,7 @@ function PublishForm({
               })
             }
           />
+          {allowlistProblem && <span className="field__error">{allowlistProblem}</span>}
         </Field>
 
         <Check
@@ -236,11 +273,12 @@ function PublishForm({
             help="A PEM file inside the gateway container that signs your operator certificates. Mount it at /etc/nginx/ssl/."
           >
             <input
-              className="input input--mono"
+              className={`input input--mono${caProblem ? " input--bad" : ""}`}
               value={draft.mtls_ca_path}
               placeholder="/etc/nginx/ssl/panel-ca.pem"
               onChange={(e) => setDraft({ ...draft, mtls_ca_path: e.target.value })}
             />
+            {caProblem && <span className="field__error">{caProblem}</span>}
           </Field>
         )}
 
@@ -254,16 +292,13 @@ function PublishForm({
           </Notice>
         )}
 
-        <h3 style={{ fontSize: "0.86rem", margin: "22px 0 10px", color: "var(--text-dim)" }}>
-          Surface
-        </h3>
-
         <Check
           label="Serve the Django admin publicly"
           help="A much larger surface than this panel's own API, with the same powers. Off by default; reach it over the loopback port instead."
           checked={draft.expose_django_admin}
           onChange={(v) => setDraft({ ...draft, expose_django_admin: v })}
         />
+        </Advanced>
       </form>
     </Modal>
   );
@@ -297,6 +332,35 @@ function HardeningForm({
     onClose();
   });
 
+  const problems = {
+    lockout_threshold: validate.range(draft.lockout_threshold, {
+      low: 0, high: 100, label: "lockout threshold",
+    }),
+    lockout_minutes: validate.range(draft.lockout_minutes, {
+      low: 1, high: 10080, label: "lockout period", unit: "min",
+    }),
+    login_rate_per_minute: validate.range(draft.login_rate_per_minute, {
+      low: 1, high: 10000, label: "sign-in rate", unit: "/min",
+    }),
+    api_rate_per_second: validate.range(draft.api_rate_per_second, {
+      low: 1, high: 10000, label: "panel rate", unit: "/s",
+    }),
+    session_idle_minutes: validate.range(draft.session_idle_minutes, {
+      low: 5, high: 1440, label: "idle timeout", unit: "min",
+    }),
+    session_max_hours: validate.range(draft.session_max_hours, {
+      low: 1, high: 168, label: "session length", unit: "h",
+    }),
+  };
+  const blocked = !!validate.firstProblem(problems);
+
+  const lockoutChanged =
+    (draft.lockout_threshold !== 5 ? 1 : 0) + (draft.lockout_minutes !== 15 ? 1 : 0);
+  const rateChanged =
+    (draft.login_rate_per_minute !== 5 ? 1 : 0) + (draft.api_rate_per_second !== 20 ? 1 : 0);
+  const sessionChanged =
+    (draft.session_idle_minutes !== 30 ? 1 : 0) + (draft.session_max_hours !== 12 ? 1 : 0);
+
   return (
     <Modal
       title="Sign-in and sessions"
@@ -306,7 +370,7 @@ function HardeningForm({
           <button className="btn" type="button" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn btn--primary" form="hardening-form" disabled={busy}>
+          <button className="btn btn--primary" form="hardening-form" disabled={busy || blocked}>
             {busy ? "Saving…" : "Save"}
           </button>
         </>
@@ -335,84 +399,125 @@ function HardeningForm({
           </Notice>
         )}
 
-        <div className="row-2">
-          <Field
-            label="Failures before locking"
-            help="Counted per account, so a distributed attempt is caught too. 0 never locks."
-          >
-            <input
-              className="input"
-              type="number"
-              min={0}
-              value={draft.lockout_threshold}
-              onChange={(e) =>
-                setDraft({ ...draft, lockout_threshold: Number(e.target.value) })
-              }
-            />
-          </Field>
-          <Field label="Locked for (minutes)">
-            <input
-              className="input"
-              type="number"
-              min={1}
-              value={draft.lockout_minutes}
-              onChange={(e) => setDraft({ ...draft, lockout_minutes: Number(e.target.value) })}
-            />
-          </Field>
-        </div>
+        <Outcome>
+          Operators sign in with a password
+          {draft.require_totp ? " and an authenticator code" : " alone"}.{" "}
+          {draft.lockout_threshold > 0
+            ? `An account locks for ${draft.lockout_minutes} minutes after ${draft.lockout_threshold} failed attempts`
+            : "Accounts never lock, however many attempts fail"}
+          , and a session ends after {draft.session_idle_minutes} minutes idle or{" "}
+          {draft.session_max_hours} hours in total.
+        </Outcome>
 
-        <div className="row-2">
-          <Field label="Sign-in attempts per minute" help="Per client address, enforced at the gateway.">
-            <input
-              className="input"
-              type="number"
-              min={1}
-              value={draft.login_rate_per_minute}
-              onChange={(e) =>
-                setDraft({ ...draft, login_rate_per_minute: Number(e.target.value) })
-              }
-            />
-          </Field>
-          <Field label="Panel requests per second" help="Per client address, across everything else.">
-            <input
-              className="input"
-              type="number"
-              min={1}
-              value={draft.api_rate_per_second}
-              onChange={(e) =>
-                setDraft({ ...draft, api_rate_per_second: Number(e.target.value) })
-              }
-            />
-          </Field>
-        </div>
+        <Advanced label="Account lockout" changed={lockoutChanged}>
+          <div className="row-2">
+            <Field
+              label="Failures before locking"
+              help="Counted per account, so a distributed attempt is caught too. 0 never locks."
+              error={problems.lockout_threshold ?? undefined}
+            >
+              <input
+                className={`input${problems.lockout_threshold ? " input--bad" : ""}`}
+                type="number"
+                min={0}
+                value={draft.lockout_threshold}
+                onChange={(e) =>
+                  setDraft({ ...draft, lockout_threshold: Number(e.target.value) })
+                }
+              />
+            </Field>
+            <Field
+              label="Locked for (minutes)"
+              error={problems.lockout_minutes ?? undefined}
+            >
+              <input
+                className={`input${problems.lockout_minutes ? " input--bad" : ""}`}
+                type="number"
+                min={1}
+                value={draft.lockout_minutes}
+                onChange={(e) => setDraft({ ...draft, lockout_minutes: Number(e.target.value) })}
+              />
+            </Field>
+          </div>
 
-        <div className="row-2">
-          <Field
-            label="Sign out after idle (minutes)"
-            help="A session left open on an unattended machine is the commonest way an admin panel is misused."
-          >
-            <input
-              className="input"
-              type="number"
-              min={5}
-              value={draft.session_idle_minutes}
-              onChange={(e) =>
-                setDraft({ ...draft, session_idle_minutes: Number(e.target.value) })
-              }
-            />
-          </Field>
-          <Field label="Maximum session length (hours)">
-            <input
-              className="input"
-              type="number"
-              min={1}
-              value={draft.session_max_hours}
-              onChange={(e) =>
-                setDraft({ ...draft, session_max_hours: Number(e.target.value) })
-              }
-            />
-          </Field>
-        </div>
+          {draft.lockout_threshold === 0 && (
+            <Notice tone="warn">
+              <span>
+                With no lockout, an attacker may keep guessing indefinitely. The per-address
+                rate limit still applies, but it does not stop a distributed attempt.
+              </span>
+            </Notice>
+          )}
+        </Advanced>
+
+        <Advanced label="Rate limits" changed={rateChanged}>
+          <div className="row-2">
+            <Field
+              label="Sign-in attempts per minute"
+              help="Per client address, enforced at the gateway."
+              error={problems.login_rate_per_minute ?? undefined}
+            >
+              <input
+                className={`input${problems.login_rate_per_minute ? " input--bad" : ""}`}
+                type="number"
+                min={1}
+                value={draft.login_rate_per_minute}
+                onChange={(e) =>
+                  setDraft({ ...draft, login_rate_per_minute: Number(e.target.value) })
+                }
+              />
+            </Field>
+            <Field
+              label="Panel requests per second"
+              help="Per client address, across everything else."
+              error={problems.api_rate_per_second ?? undefined}
+            >
+              <input
+                className={`input${problems.api_rate_per_second ? " input--bad" : ""}`}
+                type="number"
+                min={1}
+                value={draft.api_rate_per_second}
+                onChange={(e) =>
+                  setDraft({ ...draft, api_rate_per_second: Number(e.target.value) })
+                }
+              />
+            </Field>
+          </div>
+        </Advanced>
+
+        <Advanced label="Session length" changed={sessionChanged}>
+          <div className="row-2">
+            <Field
+              label="Sign out after idle (minutes)"
+              help="A session left open on an unattended machine is the commonest way an admin panel is misused."
+              error={problems.session_idle_minutes ?? undefined}
+            >
+              <input
+                className={`input${problems.session_idle_minutes ? " input--bad" : ""}`}
+                type="number"
+                min={5}
+                value={draft.session_idle_minutes}
+                onChange={(e) =>
+                  setDraft({ ...draft, session_idle_minutes: Number(e.target.value) })
+                }
+              />
+            </Field>
+            <Field
+              label="Maximum session length (hours)"
+              error={problems.session_max_hours ?? undefined}
+            >
+              <input
+                className={`input${problems.session_max_hours ? " input--bad" : ""}`}
+                type="number"
+                min={1}
+                value={draft.session_max_hours}
+                onChange={(e) =>
+                  setDraft({ ...draft, session_max_hours: Number(e.target.value) })
+                }
+              />
+            </Field>
+          </div>
+        </Advanced>
       </form>
     </Modal>
   );
@@ -444,6 +549,21 @@ function ProtectionForm({
     onClose();
   });
 
+  const problems = draft.enabled
+    ? {
+        rps: validate.range(draft.per_ip_requests_per_second, {
+          low: 1, high: 1000000, label: "request rate", unit: "r/s",
+        }),
+        burst: validate.range(draft.per_ip_burst, {
+          low: 0, high: 1000000, label: "burst",
+        }),
+        conns: validate.range(draft.per_ip_connections, {
+          low: 1, high: 100000, label: "connection limit",
+        }),
+      }
+    : { rps: null, burst: null, conns: null };
+  const blocked = !!validate.firstProblem(problems);
+
   return (
     <Modal
       title="Per-address limits"
@@ -454,7 +574,7 @@ function ProtectionForm({
           <button className="btn" type="button" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn btn--primary" form="protection-form" disabled={busy}>
+          <button className="btn btn--primary" form="protection-form" disabled={busy || blocked}>
             {busy ? "Saving…" : "Save and deploy"}
           </button>
         </>
@@ -474,15 +594,31 @@ function ProtectionForm({
           onChange={(v) => setDraft({ ...draft, enabled: v })}
         />
 
+        <Outcome>
+          {draft.enabled ? (
+            <>
+              One address may make <b>{draft.per_ip_requests_per_second} requests a second</b>
+              , spike to {draft.per_ip_burst} above that, and hold{" "}
+              {draft.per_ip_connections} connections at once. Anything beyond gets a 429.
+            </>
+          ) : (
+            <span className="outcome--empty">
+              No per-address limit. A domain whose routes set none of their own is
+              unprotected.
+            </span>
+          )}
+        </Outcome>
+
         {draft.enabled && (
-          <>
+          <Advanced label="Thresholds" changed={0} defaultOpen>
             <div className="row-2">
               <Field
                 label="Requests per second"
                 help="Sustained rate allowed from one address."
+                error={problems.rps ?? undefined}
               >
                 <input
-                  className="input"
+                  className={`input${problems.rps ? " input--bad" : ""}`}
                   type="number"
                   min={1}
                   value={draft.per_ip_requests_per_second}
@@ -497,9 +633,10 @@ function ProtectionForm({
               <Field
                 label="Burst"
                 help="How far above that a short spike may go before requests get a 429."
+                error={problems.burst ?? undefined}
               >
                 <input
-                  className="input"
+                  className={`input${problems.burst ? " input--bad" : ""}`}
                   type="number"
                   min={0}
                   value={draft.per_ip_burst}
@@ -511,9 +648,10 @@ function ProtectionForm({
             <Field
               label="Concurrent connections"
               help="Low enough to bound a slow-connection attack, high enough not to break an office behind one address."
+              error={problems.conns ?? undefined}
             >
               <input
-                className="input"
+                className={`input${problems.conns ? " input--bad" : ""}`}
                 type="number"
                 min={1}
                 value={draft.per_ip_connections}
@@ -522,7 +660,7 @@ function ProtectionForm({
                 }
               />
             </Field>
-          </>
+          </Advanced>
         )}
 
         <Check
@@ -563,7 +701,7 @@ function BlockForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => v
           <button className="btn" type="button" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn btn--danger" form="block-form" disabled={busy || !draft.cidr}>
+          <button className="btn btn--danger" form="block-form" disabled={busy || !!validate.cidr(draft.cidr)}>
             {busy ? "Blocking…" : "Block"}
           </button>
         </>
@@ -576,20 +714,38 @@ function BlockForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => v
           </div>
         )}
 
-        <Field
+        <Validated
           label="Address or range"
           help="A single address like 203.0.113.4, or a range like 203.0.113.0/24."
-        >
-          <input
-            className="input input--mono"
-            value={draft.cidr}
-            placeholder="203.0.113.0/24"
-            onChange={(e) => setDraft({ ...draft, cidr: e.target.value })}
-            autoFocus
-            required
-          />
-        </Field>
+          value={draft.cidr}
+          placeholder="203.0.113.0/24"
+          mono
+          check={validate.cidr}
+          onChange={(v) => setDraft({ ...draft, cidr: v })}
+        />
 
+        <Outcome>
+          {validate.cidr(draft.cidr) === null ? (
+            <>
+              <span className="mono">{draft.cidr.trim()}</span> will be refused with no
+              response at all
+              {draft.minutes
+                ? `, for ${draft.minutes} minutes, after which it is allowed again`
+                : ", until an operator removes the block"}
+              .
+            </>
+          ) : (
+            <span className="outcome--empty">
+              Enter one address, or a range in CIDR form. Blocking a range refuses every
+              address inside it.
+            </span>
+          )}
+        </Outcome>
+
+        <Advanced
+          label="Reason, expiry and notes"
+          changed={(draft.reason !== "abuse" ? 1 : 0) + (draft.minutes !== 1440 ? 1 : 0) + (draft.note ? 1 : 0)}
+        >
         <div className="row-2">
           <Field label="Reason">
             <select
@@ -630,6 +786,7 @@ function BlockForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => v
             onChange={(e) => setDraft({ ...draft, note: e.target.value })}
           />
         </Field>
+        </Advanced>
       </form>
     </Modal>
   );

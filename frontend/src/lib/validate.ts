@@ -116,3 +116,82 @@ export function firstProblem(results: Record<string, Invalid>): Invalid {
   }
   return null;
 }
+
+/* ---------------------------------------------------------------------------
+   Certificates and access control.
+   --------------------------------------------------------------------------- */
+
+export function email(value: string): Invalid {
+  const text = value.trim();
+  if (!text) return "A contact address is required.";
+  // Deliberately loose. The authority is the one that has to accept it, and a
+  // strict pattern rejects valid addresses more often than it catches typos.
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text))
+    return "That does not look like an email address.";
+  return null;
+}
+
+/** One hostname per line, as the certificate request form collects them. */
+export function hostnameList(value: string): Invalid {
+  for (const line of value.split("\n")) {
+    const name = line.trim();
+    if (!name) continue;
+    const problem = hostname(name);
+    if (problem) return problem;
+  }
+  return null;
+}
+
+export function pem(value: string, { kind }: { kind: "certificate" | "key" }): Invalid {
+  const text = value.trim();
+  if (!text) return `A ${kind} is required.`;
+  const header = kind === "certificate" ? "-----BEGIN CERTIFICATE-----" : "-----BEGIN";
+  if (!text.startsWith(header))
+    return kind === "certificate"
+      ? "A certificate starts with -----BEGIN CERTIFICATE-----. Paste the PEM text, not a .pfx or .der file."
+      : "A key starts with -----BEGIN. Paste the unencrypted PEM text.";
+  if (!text.includes("-----END"))
+    return `This ${kind} is missing its -----END line. Paste the whole block.`;
+  if (kind === "key" && text.includes("ENCRYPTED"))
+    return "This key is encrypted. Nginx cannot read a passphrase-protected key — decrypt it first.";
+  return null;
+}
+
+/**
+ * An address or range, as `ipaddress.ip_network` would accept it. The server
+ * normalises and stores the result, so this only has to catch what a person
+ * would plausibly type wrong.
+ */
+export function cidr(value: string): Invalid {
+  const text = value.trim();
+  if (!text) return "An address or range is required.";
+  const [addr, prefix, ...rest] = text.split("/");
+  if (rest.length) return "Use one '/' at most, as in 203.0.113.0/24.";
+
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(addr);
+  const looksV6 = addr.includes(":");
+
+  if (v4) {
+    if (v4.slice(1).some((part) => Number(part) > 255))
+      return `'${addr}' is not an address — each part must be 0 to 255.`;
+    if (prefix !== undefined) {
+      const bits = Number(prefix);
+      if (!/^\d+$/.test(prefix) || bits > 32)
+        return "A prefix length for an IPv4 range is 0 to 32, as in 203.0.113.0/24.";
+      if (bits === 0) return "Blocking every address would take the gateway offline.";
+    }
+    return null;
+  }
+
+  if (looksV6) {
+    if (prefix !== undefined) {
+      const bits = Number(prefix);
+      if (!/^\d+$/.test(prefix) || bits > 128)
+        return "A prefix length for an IPv6 range is 0 to 128.";
+      if (bits === 0) return "Blocking every address would take the gateway offline.";
+    }
+    return null;
+  }
+
+  return `'${text}' is not an address or range. Use 203.0.113.4 or 203.0.113.0/24.`;
+}

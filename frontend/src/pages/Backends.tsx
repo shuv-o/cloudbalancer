@@ -49,6 +49,7 @@ interface DraftBackend {
   keepalive_requests: number;
   health_check_enabled: boolean;
   health_check_path: string;
+  health_check_host: string;
   health_check_timeout: number;
   drain_unhealthy: boolean;
   unhealthy_threshold: number;
@@ -68,6 +69,7 @@ const BLANK: DraftBackend = {
   keepalive_requests: 1000,
   health_check_enabled: true,
   health_check_path: "/health",
+  health_check_host: "",
   health_check_timeout: 5,
   drain_unhealthy: false,
   unhealthy_threshold: 3,
@@ -119,9 +121,14 @@ function BackendForm({
   const healthChanged =
     (!draft.health_check_enabled ? 1 : 0) +
     (draft.health_check_path !== "/health" ? 1 : 0) +
+    (draft.health_check_host ? 1 : 0) +
     (draft.drain_unhealthy ? 1 : 0);
 
-  const blocked = !!(nameProblem || sniProblem || caProblem || timingProblem);
+  const hostProblem = draft.health_check_host
+    ? validate.hostname(draft.health_check_host)
+    : null;
+
+  const blocked = !!(nameProblem || sniProblem || caProblem || timingProblem || hostProblem);
 
   return (
     <Modal
@@ -328,6 +335,16 @@ function BackendForm({
                   />
                 </Field>
               </div>
+
+              <Validated
+                label="Send this Host header"
+                value={draft.health_check_host}
+                mono
+                placeholder="leave empty unless the instance routes on hostname"
+                help="A reverse proxy — Traefik, Caddy, another Nginx — picks the site from the Host header. Probed by IP it matches nothing and answers 404 however healthy the service is. Put the hostname this backend serves here."
+                check={(v) => (v ? validate.hostname(v) : null)}
+                onChange={(v) => setDraft({ ...draft, health_check_host: v })}
+              />
 
               <Check
                 label="Take failing instances out of rotation"
@@ -745,6 +762,7 @@ export function Backends() {
             keepalive_requests: editingBackend.keepalive_requests,
             health_check_enabled: editingBackend.health_check_enabled,
             health_check_path: editingBackend.health_check_path,
+            health_check_host: editingBackend.health_check_host ?? "",
             health_check_timeout: editingBackend.health_check_timeout,
             drain_unhealthy: editingBackend.drain_unhealthy,
             unhealthy_threshold: editingBackend.unhealthy_threshold,

@@ -65,6 +65,14 @@ class BackendInputSerializer(serializers.Serializer):
 
     def validate_health_check_path(self, value: str) -> str:
         return value.strip() or "/health"
+
+    # Empty is the normal case: only a backend that routes on hostname needs it.
+    health_check_host = serializers.CharField(
+        required=False, allow_blank=True, default=""
+    )
+
+    def validate_health_check_host(self, value: str) -> str:
+        return value.strip().lower()
     health_check_interval = serializers.IntegerField(default=10, min_value=1)
     health_check_timeout = serializers.IntegerField(default=5, min_value=1)
     is_active = serializers.BooleanField(required=False, default=True)
@@ -106,7 +114,7 @@ class BackendOutputSerializer(serializers.ModelSerializer):
             "lb_method", "lb_method_label",
             "keepalive_connections", "keepalive_requests", "keepalive_timeout",
             "drain_unhealthy", "unhealthy_threshold", "healthy_threshold",
-            "health_check_enabled", "health_check_path",
+            "health_check_enabled", "health_check_path", "health_check_host",
             "health_check_interval", "health_check_timeout",
             "is_active", "created_at", "updated_at",
             "instances", "healthy_instance_count", "total_instance_count",

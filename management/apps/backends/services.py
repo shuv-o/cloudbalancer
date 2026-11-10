@@ -26,6 +26,7 @@ def backend_create(
     keepalive_timeout: int = 60,
     health_check_enabled: bool = True,
     health_check_path: str = "/health",
+    health_check_host: str = "",
     health_check_interval: int = 10,
     health_check_timeout: int = 5,
     drain_unhealthy: bool = False,
@@ -47,6 +48,7 @@ def backend_create(
         keepalive_timeout=keepalive_timeout,
         health_check_enabled=health_check_enabled,
         health_check_path=health_check_path,
+        health_check_host=health_check_host,
         health_check_interval=health_check_interval,
         health_check_timeout=health_check_timeout,
         drain_unhealthy=drain_unhealthy,
@@ -72,6 +74,7 @@ def backend_update(*, backend: Backend, data: dict) -> Backend:
         "keepalive_connections",
         "health_check_enabled",
         "health_check_path",
+        "health_check_host",
         "health_check_interval",
         "health_check_timeout",
         "drain_unhealthy",
@@ -137,8 +140,11 @@ def instance_delete(*, instance: BackendInstance) -> None:
 def health_check_instance(
     *,
     instance: BackendInstance,
+    scheme: str = "http",
+    host: str = "",
     path: str = "/health",
     timeout: int = 5,
+    verify: bool = False,
     unhealthy_threshold: int = 3,
     healthy_threshold: int = 2,
     drain_unhealthy: bool = False,
@@ -153,12 +159,23 @@ def health_check_instance(
     instance on every blip would turn one flapping backend into a continuous
     stream of gateway reloads.
     """
-    url = f"http://{instance.address}:{instance.port}{path}"
+    # The scheme has to follow the backend's own. Probing https://...:443 over
+    # plaintext is the same mistake that once sent live traffic to a TLS port,
+    # and here it produces a permanently failing probe against a healthy host.
+    url = f"{scheme}://{instance.address}:{instance.port}{path}"
+
+    # Addressed by IP, a reverse proxy that routes on hostname matches no route
+    # and answers 404 no matter how healthy the service behind it is. The Host
+    # header is what makes the probe ask the question the operator meant.
+    headers = {"Host": host} if host else None
+
     start = time.monotonic()
 
     try:
-        with httpx.Client(timeout=timeout) as client:
-            response = client.get(url)
+        # verify is off by default because the probe connects to an IP, so the
+        # certificate legitimately will not match the name on it.
+        with httpx.Client(timeout=timeout, verify=verify) as client:
+            response = client.get(url, headers=headers)
         elapsed_ms = (time.monotonic() - start) * 1000
         is_healthy = 200 <= response.status_code < 400
 
@@ -234,7 +251,10 @@ def health_check_backend(*, backend: Backend) -> list[HealthCheckResult]:
     return [
         health_check_instance(
             instance=inst,
+            scheme=backend.scheme,
+            host=backend.health_check_host,
             path=backend.health_check_path,
+            verify=backend.tls_verify,
             timeout=backend.health_check_timeout,
             unhealthy_threshold=backend.unhealthy_threshold,
             healthy_threshold=backend.healthy_threshold,

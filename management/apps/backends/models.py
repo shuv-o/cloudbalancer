@@ -10,6 +10,7 @@ from django.db import models
 
 from common.validators import (
     validate_config_path,
+    validate_hostname,
     validate_identifier,
     validate_range,
     validate_sni_name,
@@ -133,6 +134,17 @@ class Backend(models.Model):
         default="/health",
         help_text="HTTP path to probe for health checks",
     )
+    health_check_host = models.CharField(
+        max_length=253,
+        blank=True,
+        default="",
+        help_text=(
+            "Host header to send when probing. Needed when the instance is a "
+            "reverse proxy that routes on hostname -- Traefik, Caddy, another "
+            "Nginx -- because a probe addressed by IP matches no route there "
+            "and comes back 404 however healthy the service behind it is."
+        ),
+    )
     health_check_interval = models.IntegerField(
         default=10,
         help_text="Seconds between health checks",
@@ -178,6 +190,8 @@ class Backend(models.Model):
         validate_identifier(self.name, label="backend name")
         validate_config_path(self.tls_trusted_ca_path, label="CA bundle path")
         validate_sni_name(self.tls_server_name)
+        if self.health_check_host:
+            validate_hostname(self.health_check_host)
         validate_range(
             self.keepalive_connections, low=0, high=10000,
             label="keepalive connections",

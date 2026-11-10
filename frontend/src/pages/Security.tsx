@@ -18,6 +18,7 @@ import {
   useToast,
 } from "../components/ui";
 import * as validate from "../lib/validate";
+import * as webauthn from "../lib/webauthn";
 
 interface Policy {
   panel_domain: string;
@@ -792,6 +793,129 @@ function BlockForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => v
   );
 }
 
+
+type Passkey = {
+  id: number;
+  label: string;
+  is_backed_up: boolean;
+  transports: string[];
+  created_at: string;
+  last_used_at: string | null;
+};
+
+/**
+ * Enrolling and removing passkeys.
+ *
+ * Two things can make this unavailable, and they need different sentences: a
+ * browser that cannot do WebAuthn, and a panel with no hostname to bind a
+ * credential to. Saying "unavailable" for both would leave an operator with
+ * nothing to act on.
+ */
+function PasskeysPanel() {
+  const { data, reload } = useResource<{ available: boolean; passkeys: Passkey[] }>(
+    "/api/v1/security/passkeys/",
+  );
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  const browserReason = webauthn.unavailableReason();
+  const keys = data?.passkeys ?? [];
+
+  async function enrol() {
+    const label =
+      window.prompt("What should this device be called?", "This device")?.trim() ?? "";
+    if (!label) return;
+
+    setBusy(true);
+    try {
+      const options = await api.post<Record<string, unknown>>(
+        "/api/v1/auth/passkey/register/options/",
+        {},
+      );
+      const credential = await webauthn.create(options);
+      await api.post("/api/v1/auth/passkey/register/verify/", { credential, label });
+      toast(`${label} can now sign you in.`);
+      reload();
+    } catch (err) {
+      const apiError = err as { status?: number; message?: string };
+      toast(apiError.status ? apiError.message! : webauthn.describe(err), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(key: Passkey) {
+    if (keys.length === 1) {
+      const sure = window.confirm(
+        `${key.label} is your only passkey. Remove it and you will sign in with your password and authenticator code instead. Continue?`,
+      );
+      if (!sure) return;
+    }
+    await api.delete(`/api/v1/security/passkeys/${key.id}/`);
+    toast(`${key.label} removed.`);
+    reload();
+  }
+
+  return (
+    <Panel title="Passkeys" flush>
+      <div className="panel__body">
+        <Outcome>
+          {keys.length === 0
+            ? "You sign in with a password and an authenticator code. A passkey replaces both with your device's fingerprint, face or PIN — and cannot be phished, because the signature only works on this panel's own address."
+            : `${keys.length === 1 ? "One passkey signs" : `${keys.length} passkeys sign`} you in without a password or a code. Your password still works as a fallback.`}
+        </Outcome>
+
+        {!data?.available && !browserReason && (
+          <Notice tone="warn">
+            Passkeys need the panel published at a hostname of its own. A passkey is
+            bound to a domain name and an IP address cannot be one, so enrolment is
+            held until you publish it above.
+          </Notice>
+        )}
+        {browserReason && <Notice tone="warn">{browserReason}</Notice>}
+      </div>
+
+      {keys.length > 0 && (
+        <div className="rows">
+          {keys.map((key) => (
+            <Row key={key.id} state="healthy" columns="minmax(0,1fr) auto auto">
+              <div>
+                <div className="row__primary">{key.label}</div>
+                <div className="row__secondary">
+                  {key.last_used_at
+                    ? `last used ${relativeTime(key.last_used_at)}`
+                    : "never used"}
+                  {` · added ${relativeTime(key.created_at)}`}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <Tag tone={key.is_backed_up ? "hit" : "signal"}>
+                  {key.is_backed_up ? "synced" : "this device only"}
+                </Tag>
+              </div>
+              <div className="row__actions">
+                <button className="btn btn--small" onClick={() => remove(key)}>
+                  Remove
+                </button>
+              </div>
+            </Row>
+          ))}
+        </div>
+      )}
+
+      <div className="panel__body">
+        <button
+          className="btn btn--primary"
+          disabled={busy || !data?.available || !!browserReason}
+          onClick={enrol}
+        >
+          {busy ? "Waiting for your device…" : "Add a passkey"}
+        </button>
+      </div>
+    </Panel>
+  );
+}
+
 export function Security() {
   const { data: policy, reload: reloadPolicy } = useResource<Policy>(
     "/api/v1/security/policy/",
@@ -1065,6 +1189,10 @@ export function Security() {
           </div>
         </Panel>
 
+        <PasskeysPanel />
+      </div>
+
+      <div className="grid grid--2" style={{ marginBottom: 16 }}>
         <Panel title="Recent sign-in attempts" flush>
           {(attempts ?? []).length === 0 ? (
             <Empty title="Nothing yet" body="Sign-in attempts appear here as they happen." />

@@ -21,6 +21,7 @@ from apps.security.models import (
     AuditEvent,
     LoginAttempt,
     PanelAccessPolicy,
+    Passkey,
     TotpDevice,
 )
 from common.services import model_update
@@ -399,9 +400,22 @@ def totp_reset_for_user(*, actor, target_user) -> None:
 
 
 def user_requires_totp_setup(*, user) -> bool:
-    """True when policy demands a second factor and this account has none."""
+    """
+    True when policy demands a second factor and this account has none.
+
+    A passkey counts. It is registered with user verification required, so
+    using one proves possession of the device *and* the biometric or PIN that
+    unlocked it -- two factors in a single gesture, and unlike a code, bound to
+    the origin that asked for it. Insisting on an authenticator app as well
+    would hold an operator at an enrolment screen to add a weaker factor than
+    the one they already have.
+    """
     if not PanelAccessPolicy.load().require_totp:
         return False
+
+    if Passkey.objects.filter(user=user).exists():
+        return False
+
     device = TotpDevice.objects.filter(user=user).first()
     return device is None or not device.is_confirmed
 

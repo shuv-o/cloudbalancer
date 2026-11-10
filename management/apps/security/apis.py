@@ -1,4 +1,6 @@
 """Security API views."""
+import logging
+
 from django.contrib.auth.models import User
 from rest_framework import status
 from rest_framework.permissions import IsAdminUser
@@ -28,6 +30,7 @@ from apps.security.serializers import (
     TotpDisableSerializer,
     TotpResetSerializer,
 )
+from apps.security.passkeys import passkeys_available
 from apps.security.services import (
     SecurityError,
     address_block,
@@ -40,6 +43,9 @@ from apps.security.services import (
     totp_reset_for_user,
 )
 
+
+
+logger = logging.getLogger(__name__)
 
 class IsSuperuser(IsAdminUser):
     def has_permission(self, request, view):
@@ -323,4 +329,48 @@ class BlockedAddressDetailApi(APIView):
         from apps.gateway.tasks import request_config_deploy
         request_config_deploy(user_id=request.user.pk)
 
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class PasskeyApi(APIView):
+    """
+    GET    /api/v1/security/passkeys/  — the signed-in operator's passkeys
+    """
+
+    def get(self, request):
+        from apps.security.models import Passkey
+
+        return Response({
+            "available": passkeys_available(),
+            "passkeys": [
+                {
+                    "id": key.pk,
+                    "label": key.label,
+                    "is_backed_up": key.is_backed_up,
+                    "transports": key.transports,
+                    "created_at": key.created_at,
+                    "last_used_at": key.last_used_at,
+                }
+                for key in Passkey.objects.filter(user=request.user)
+            ],
+        })
+
+
+class PasskeyDetailApi(APIView):
+    """
+    DELETE /api/v1/security/passkeys/<id>/  — remove one of your own passkeys
+    """
+
+    def delete(self, request, passkey_id: int):
+        from apps.security.models import Passkey
+
+        # Scoped to the requesting user, so one operator cannot remove
+        # another's credential by guessing an id.
+        passkey = Passkey.objects.filter(pk=passkey_id, user=request.user).first()
+        if passkey is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        label = passkey.label
+        passkey.delete()
+        logger.info("%s removed passkey '%s'", request.user, label)
         return Response(status=status.HTTP_204_NO_CONTENT)

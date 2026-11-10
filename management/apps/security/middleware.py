@@ -43,6 +43,8 @@ _AUDIT_SUMMARIES = [
     (re.compile(r"^/api/v1/gateway/cache/"), "POST", "Purged the cache"),
     (re.compile(r"^/api/v1/security/policy/"), "PATCH", "Changed the access policy"),
     (re.compile(r"^/api/v1/security/totp/"), "POST", "Changed a second factor"),
+    (re.compile(r"^/api/v1/auth/passkey/register/verify/"), "POST", "Enrolled a passkey"),
+    (re.compile(r"^/api/v1/security/passkeys/\d+/$"), "DELETE", "Removed a passkey"),
     (re.compile(r"^/api/v1/auth/login/"), "POST", "Signed in"),
     (re.compile(r"^/api/v1/auth/logout/"), "POST", "Signed out"),
 ]

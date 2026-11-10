@@ -1,7 +1,8 @@
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { ApiError, api, primeCsrf } from "../lib/api";
 import { User } from "../lib/types";
 import { Field } from "../components/ui";
+import * as webauthn from "../lib/webauthn";
 
 type Stage = "credentials" | "code";
 
@@ -13,7 +14,50 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
   const [error, setError] = useState<string | null>(null);
   const [locked, setLocked] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const [passkeysOffered, setPasskeysOffered] = useState(false);
   const codeRef = useRef<HTMLInputElement>(null);
+
+  // Two things have to be true: this browser can do passkeys, and the panel is
+  // published at a hostname they could be bound to. Asking the server keeps a
+  // button that cannot possibly work off the form.
+  useEffect(() => {
+    if (!webauthn.supported()) return;
+    api
+      .get<{ passkeys_available?: boolean }>("/api/v1/auth/me/")
+      .then((body) => setPasskeysOffered(!!body.passkeys_available))
+      .catch(() => setPasskeysOffered(false));
+  }, []);
+
+  async function signInWithPasskey() {
+    setPasskeyBusy(true);
+    setError(null);
+
+    try {
+      await primeCsrf();
+      const options = await api.post<Record<string, unknown>>(
+        "/api/v1/auth/passkey/login/options/",
+        {},
+      );
+      const credential = await webauthn.get(options);
+      const user = await api.post<User>("/api/v1/auth/passkey/login/verify/", {
+        credential,
+      });
+      onSignedIn({ ...user, authenticated: true });
+    } catch (err) {
+      // A ceremony the person dismissed is not an error worth shouting about,
+      // and the browser reports it the same way it reports a timeout.
+      const apiError = err as ApiError;
+      setLocked(apiError.status === 429);
+      setError(
+        apiError.status
+          ? apiError.message
+          : webauthn.describe(err),
+      );
+    } finally {
+      setPasskeyBusy(false);
+    }
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -78,6 +122,21 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
 
         <section className="panel">
           <div className="panel__body">
+            {passkeysOffered && stage === "credentials" && (
+              <>
+                <button
+                  type="button"
+                  className="btn btn--primary"
+                  style={{ width: "100%", justifyContent: "center" }}
+                  disabled={passkeyBusy || busy || locked}
+                  onClick={signInWithPasskey}
+                >
+                  {passkeyBusy ? "Waiting for your device…" : "Sign in with a passkey"}
+                </button>
+                <div className="login__or">or use a password</div>
+              </>
+            )}
+
             <form onSubmit={submit}>
               {stage === "credentials" ? (
                 <>
@@ -141,10 +200,11 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
               )}
 
               <button
-                className="btn btn--primary"
+                className={`btn ${passkeysOffered && stage === "credentials" ? "btn--ghost" : "btn--primary"}`}
                 style={{ width: "100%", justifyContent: "center" }}
                 disabled={
                   busy ||
+                  passkeyBusy ||
                   locked ||
                   (stage === "credentials" ? !username || !password : !otp)
                 }

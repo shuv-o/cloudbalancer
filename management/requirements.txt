@@ -38,4 +38,9 @@ django-prometheus>=2.3
 
 # Second factor for the control panel
 pyotp>=2.9
+
+# Passkeys. WebAuthn is the only sign-in here that cannot be phished:
+# the signature is bound to the origin, so a convincing copy of the panel
+# on another domain gets nothing a real one would accept.
+webauthn>=2.0,<3.0
 qrcode>=8.0

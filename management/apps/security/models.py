@@ -260,6 +260,8 @@ class LoginAttempt(models.Model):
         LOCKED = "locked", "Account locked"
         BLOCKED_IP = "blocked_ip", "Address not allowed"
         INACTIVE = "inactive", "Account disabled"
+        PASSKEY = "passkey", "Signed in with a passkey"
+        BAD_PASSKEY = "bad_passkey", "Passkey rejected"
 
     username = models.CharField(max_length=254, db_index=True)
     ip_address = models.GenericIPAddressField(null=True, blank=True, db_index=True)
@@ -485,3 +487,59 @@ class BlockedAddress(models.Model):
     @property
     def is_active(self) -> bool:
         return self.expires_at is None or self.expires_at > timezone.now()
+
+
+class Passkey(models.Model):
+    """
+    One WebAuthn credential belonging to one operator.
+
+    A passkey is the only sign-in here that cannot be phished. The signature it
+    produces is bound to the origin that asked for it, so a convincing copy of
+    this panel on another domain receives nothing the real one would accept —
+    which is exactly what a password and a six-digit code cannot promise.
+
+    What is stored is a public key. It verifies a signature and cannot produce
+    one, so this table is not a credential store in the sense a password hash
+    table is: leaking it does not let anyone sign in.
+    """
+
+    user = models.ForeignKey(
+        "auth.User",
+        on_delete=models.CASCADE,
+        related_name="passkeys",
+    )
+    label = models.CharField(
+        max_length=64,
+        help_text="What the operator calls this device, e.g. 'work laptop'",
+    )
+
+    # Base64url, the form WebAuthn itself uses on the wire. Kept as text so the
+    # value that arrives from the browser can be compared without decoding.
+    credential_id = models.CharField(max_length=512, unique=True, db_index=True)
+    public_key = models.TextField()
+
+    # The authenticator increments this on every assertion. A counter that goes
+    # backwards means two authenticators are answering for one credential,
+    # which is how a cloned device announces itself. Verification rejects it.
+    sign_count = models.BigIntegerField(default=0)
+
+    transports = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="How the browser reached the authenticator: usb, nfc, ble, internal, hybrid",
+    )
+    # A backed-up credential is synced to a cloud keychain, so it survives the
+    # device being lost. One that is not is single-device: losing the device
+    # loses the passkey, which changes what recovery advice is honest.
+    is_backed_up = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "passkey"
+        verbose_name_plural = "passkeys"
+
+    def __str__(self) -> str:
+        return f"{self.label} ({self.user})"

@@ -1230,3 +1230,21 @@ input.input--bad {
     transition: none;
   }
 }
+
+/* The divider between the passkey button and the password form. A line with a
+   label in it, rather than a heading: the two are alternatives, not a sequence. */
+.login__or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0 16px;
+  font-size: 0.75rem;
+  color: var(--text-faint);
+}
+.login__or::before,
+.login__or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}

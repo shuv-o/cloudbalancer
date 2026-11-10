@@ -70,7 +70,7 @@ limit_req_status  429;
 geo $blocked_client {
     default 0;
 {% for entry in blocked_addresses %}
-    {{ entry.cidr }} 1;{% if entry.note %}  # {{ entry.note }}{% endif %}
+    {{ entry.cidr }} 1;{% if entry.note %}  # {{ entry.note|nginx_comment }}{% endif %}
 
 {% endfor %}
 }
@@ -94,11 +94,11 @@ limit_req_zone $binary_remote_addr zone=rl_{{ rule.slug }}:10m rate={{ rule.rate
 # the upstream keepalive pool; the cost is one hash lookup per request.
 # ---------------------------------------------------------------------------
 {% for rule in header_routed_rules %}
-# {{ rule.domain_name }}{{ rule.match_value }} — switches on {{ rule.header_name }}
+# {{ rule.domain_name|nginx_comment }}{{ rule.match_value|nginx_comment }} — switches on {{ rule.header_name|nginx_comment }}
 map {{ rule.header_variable }} $target_{{ rule.slug }} {
     default  {{ rule.default_upstream }};
 {% for route in rule.header_routes %}
-    "{{ route.header_value }}"  {{ route.upstream_name }};{% if route.description %}  # {{ route.description }}{% endif %}
+    {{ route.header_value|nginx_quoted }}  {{ route.upstream_name }};{% if route.description %}  # {{ route.description|nginx_comment }}{% endif %}
 
 {% endfor %}
 }

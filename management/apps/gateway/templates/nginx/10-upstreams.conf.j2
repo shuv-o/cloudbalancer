@@ -2,7 +2,7 @@
    One upstream block per active backend.
    --------------------------------------------------------------------------- #}
 {% for backend in backends %}
-# {{ backend.name }} — {{ backend.lb_method }}, {{ backend.serving_count }}/{{ backend.total_count }} serving
+# {{ backend.name|nginx_comment }} — {{ backend.lb_method }}, {{ backend.serving_count }}/{{ backend.total_count }} serving
 upstream {{ backend.upstream_name }} {
 {% if backend.lb_method == "least_conn" %}
     # `zone` is what makes this accurate: without shared memory each worker

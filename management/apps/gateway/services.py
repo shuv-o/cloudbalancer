@@ -25,6 +25,9 @@ from django.conf import settings
 from django.utils import timezone
 from jinja2 import Environment, FileSystemLoader
 
+from apps.gateway.nginx_values import comment as nginx_comment
+from apps.gateway.nginx_values import quoted as nginx_quoted
+
 from apps.backends.models import Backend
 from apps.domains.models import Domain
 from apps.routing.models import ConfigDeployLog, RoutingRule
@@ -39,6 +42,12 @@ _jinja_env = Environment(
     lstrip_blocks=True,
     keep_trailing_newline=True,
 )
+
+# Operator-supplied strings are interpolated into a configuration file, so they
+# need escaping at the boundary the way template input does. Autoescaping is no
+# help here: it escapes for HTML, and the grammar being written is Nginx's.
+_jinja_env.filters["nginx_quoted"] = nginx_quoted
+_jinja_env.filters["nginx_comment"] = nginx_comment
 
 # Files this system owns. Anything else in conf.d is left alone, so an
 # operator can drop in a hand-written block without it being deleted.

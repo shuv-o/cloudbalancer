@@ -7,6 +7,8 @@ traffic to different backends.
 """
 from django.db import models
 
+from common.validators import validate_hostname
+
 
 class Domain(models.Model):
     """
@@ -54,6 +56,14 @@ class Domain(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
+    def clean(self):
+        """
+        The name is written straight into `server_name`, where nothing can be
+        quoted, so it is constrained here rather than escaped on the way out.
+        """
+        super().clean()
+        validate_hostname(self.name)
 
     @property
     def slug(self) -> str:

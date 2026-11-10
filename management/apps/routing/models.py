@@ -7,6 +7,12 @@ a priority for ordering.
 """
 from django.db import models
 
+from common.validators import (
+    validate_header_name,
+    validate_header_value,
+    validate_match_value,
+)
+
 
 class RoutingRule(models.Model):
     """
@@ -156,6 +162,24 @@ class RoutingRule(models.Model):
         arrow = "→"
         return f"{self.domain.name}{self.match_value} {arrow} {self.backend.name}"
 
+    def clean(self):
+        """
+        match_value becomes a `location` directive and custom header names
+        become `proxy_set_header` arguments. Neither can be quoted, so both are
+        constrained here. Header *values* are escaped at render time instead,
+        since an operator may legitimately want punctuation in them.
+        """
+        super().clean()
+        validate_match_value(
+            self.match_value,
+            is_regex=self.match_type == self.MatchType.REGEX,
+        )
+        for name, value in (self.custom_headers or {}).items():
+            validate_header_name(name)
+            validate_header_value(value, label=f"value for '{name}'")
+        for name in (self.cache_key_headers or []):
+            validate_header_name(name)
+
     @property
     def nginx_location(self) -> str:
         """Build the Nginx location directive string."""
@@ -263,6 +287,15 @@ class HeaderRoute(models.Model):
 
     def __str__(self) -> str:
         return f"{self.header_name}: {self.header_value} -> {self.backend.name}"
+
+    def clean(self):
+        """
+        The name becomes an `$http_*` variable, which cannot be quoted. The
+        value is a map key and is escaped at render time.
+        """
+        super().clean()
+        validate_header_name(self.header_name)
+        validate_header_value(self.header_value, label="header value")
 
     @property
     def nginx_variable(self) -> str:

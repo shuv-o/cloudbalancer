@@ -8,6 +8,8 @@ of that service at a specific host:port.
 from django.core.exceptions import ValidationError
 from django.db import models
 
+from common.validators import validate_identifier
+
 
 # A port whose meaning is fixed by convention, paired with the wrong scheme, is
 # almost always a mistake -- and the symptom does not point at the cause.
@@ -167,6 +169,8 @@ class Backend(models.Model):
     def clean(self):
         """Reject a scheme that contradicts a port already configured."""
         super().clean()
+        # The name becomes an upstream block name, which cannot be quoted.
+        validate_identifier(self.name, label="backend name")
         if self.pk is None:
             return
         for instance in self.instances.all():

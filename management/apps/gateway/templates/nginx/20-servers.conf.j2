@@ -35,7 +35,7 @@
         proxy_send_timeout {{ rule.proxy_read_timeout }}s;
 {% endif %}
 {% for header_name, header_value in rule.custom_headers.items() %}
-        proxy_set_header {{ header_name }} "{{ header_value }}";
+        proxy_set_header {{ header_name }} {{ header_value|nginx_quoted }};
 {% endfor %}
 {%- endmacro %}
 {% macro routes(domain) %}
@@ -60,7 +60,7 @@
     vhost_traffic_status_filter_by_set_key $server_name host::$server_name;
 
 {% for rule in domain.rules %}
-    # {{ rule.match_value }} -> {{ rule.backend_name }} (priority {{ rule.priority }}{% if rule.cache_enabled %}, cached {{ rule.cache_ttl }}s{% endif %}{% if rule.header_routes %}, {{ rule.header_routes|length }} header override{{ '' if rule.header_routes|length == 1 else 's' }}{% endif %})
+    # {{ rule.match_value|nginx_comment }} -> {{ rule.backend_name|nginx_comment }} (priority {{ rule.priority }}{% if rule.cache_enabled %}, cached {{ rule.cache_ttl }}s{% endif %}{% if rule.header_routes %}, {{ rule.header_routes|length }} header override{{ '' if rule.header_routes|length == 1 else 's' }}{% endif %})
     location {{ rule.nginx_location }} {
 {% if rule.rate_limit_enabled %}
         limit_req        zone=rl_{{ rule.slug }} burst={{ rule.rate_limit_burst }} nodelay;
@@ -175,7 +175,7 @@
 {% endmacro %}
 {% for domain in domains %}
 # ===========================================================================
-# {{ domain.name }}{% if domain.ssl_enabled %} -- TLS, {{ domain.cert_issuer_label }}{% else %} -- HTTP only{% endif %}
+# {{ domain.name|nginx_comment }}{% if domain.ssl_enabled %} -- TLS, {{ domain.cert_issuer_label|nginx_comment }}{% else %} -- HTTP only{% endif %}
 
 # ===========================================================================
 server {

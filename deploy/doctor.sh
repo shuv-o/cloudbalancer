@@ -91,7 +91,20 @@ else
     no "nginx cannot reach django  <-- this is what makes the panel answer 503"
 fi
 
-if docker compose exec -T nginx nginx -t >/dev/null 2>&1; then ok "nginx config valid"; else no "nginx config invalid"; fi
+# The output, not just the verdict. "nginx config invalid" is a fact nobody
+# can act on, and the reason is one line that this was discarding.
+if nginx_test=$(docker compose exec -T nginx nginx -t 2>&1); then
+    ok "nginx config valid"
+else
+    no "nginx config invalid"
+    printf '%s\n' "$nginx_test" | sed 's/^/      /'
+    if printf '%s' "$nginx_test" | grep -q 'host not found in upstream'; then
+        printf '\n      \033[33mA name in an upstream block did not resolve. If it is a\033[0m\n'
+        printf '      \033[33mbackend, check it is reachable from this host. If it is\033[0m\n'
+        printf '      \033[33mdjango, the generated config predates the change that\033[0m\n'
+        printf '      \033[33mstopped it being an upstream at all:  make deploy\033[0m\n'
+    fi
+fi
 
 hr "Database"
 docker compose exec -T postgres psql -U "${POSTGRES_USER:-cloudbalancer}" \

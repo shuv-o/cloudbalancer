@@ -57,13 +57,20 @@ RUN chmod +x docker-entrypoint.sh
 # Nothing in the management plane needs root. It renders templates, talks to
 # Postgres, runs certbot and writes to volumes.
 #
+# It does need a home directory, which the first version denied it: Gunicorn's
+# control server opens a socket under $HOME and logged
+# "Control server error: [Errno 13] Permission denied: '/home/cloudbalancer'"
+# on every start. Requests were served regardless, which is the kind of error
+# that stays in a log for years.
+#
 # The uid is fixed rather than left to the distribution, because every volume
 # this container writes to has to be owned by it, and a uid that moved between
 # image rebuilds would silently make those volumes unwritable.
 ARG APP_UID=10001
 ARG APP_GID=10001
 RUN groupadd --gid "${APP_GID}" cloudbalancer \
-    && useradd --uid "${APP_UID}" --gid "${APP_GID}" --no-create-home --shell /usr/sbin/nologin cloudbalancer \
+    && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home \
+        --home-dir /home/cloudbalancer --shell /usr/sbin/nologin cloudbalancer \
     && mkdir -p /etc/nginx/conf.d /etc/nginx/ssl /etc/letsencrypt \
                 /var/lib/letsencrypt /var/log/letsencrypt /var/www/acme \
                 /var/cache/nginx /var/backups/cloudbalancer \
@@ -74,7 +81,7 @@ RUN groupadd --gid "${APP_GID}" cloudbalancer \
     # without any manual step. A volume that already exists keeps the
     # ownership it has, which is what `make fix-permissions` is for.
     && chown -R "${APP_UID}:${APP_GID}" \
-        /app /etc/nginx/conf.d /etc/nginx/ssl /etc/letsencrypt \
+        /home/cloudbalancer /app /etc/nginx/conf.d /etc/nginx/ssl /etc/letsencrypt \
         /var/lib/letsencrypt /var/log/letsencrypt /var/www/acme \
         /var/cache/nginx /var/backups/cloudbalancer /var/run/cloudbalancer
 

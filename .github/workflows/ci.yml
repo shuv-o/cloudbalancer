@@ -632,7 +632,8 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           # SC1091: sourced files are resolved at runtime, not here.
-          shellcheck -e SC1091 benchmarks/*.sh deploy/*.sh
+          shellcheck -e SC1091 benchmarks/*.sh deploy/*.sh \
+            gateway/nginx/*.sh gateway/nginx/docker-entrypoint.d/*.sh
 
       - name: Fail if generated config is tracked
         run: |

@@ -144,6 +144,8 @@ check "a pass with nothing to do does not reopen" \
 # --- a fresh .1 holds off the next rotation --------------------------------
 # Only .1 is readable; rotating again compresses it. If that happens before
 # the control plane's next pass, the lines in it never reach the counts.
+# Read by rotate_logs in the sourced watcher, not by this script.
+# shellcheck disable=SC2034
 ROTATE_MIN_INTERVAL=900
 rm -f "$LOGS"/throttle.example.com.access.log*
 big "$LOGS/throttle.example.com.access.log"
@@ -167,6 +169,7 @@ big "$LOGS/throttle.example.com.access.log"
 rotate_logs force > /dev/null 2>&1
 exists "a forced rotation ignores the interval" \
     "$LOGS/throttle.example.com.access.log.3.gz"
+# shellcheck disable=SC2034
 ROTATE_MIN_INTERVAL=0
 
 echo "daily rotation"
@@ -223,16 +226,16 @@ echo "commands"
 
 # --- the dispatch accepts three names and refuses everything else ----------
 : > "$NGINX_CALLS"
-out="$(run_command test)"
+run_command test > /dev/null 2>&1
 check "test runs a config check" "$(cat "$NGINX_CALLS")" "-t"
 
 : > "$NGINX_CALLS"
-out="$(run_command reload)"
+run_command reload > /dev/null 2>&1
 check "reload checks before signalling" "$(tr '\n' ' ' < "$NGINX_CALLS")" "-t -s reload "
 
 : > "$NGINX_CALLS"
 big "$LOGS/busy.example.com.access.log"
-out="$(run_command rotate)"
+run_command rotate > /dev/null 2>&1
 exists "rotate rotates regardless of size" "$LOGS/busy.example.com.access.log.1"
 
 # Anything else must select no command at all. These are the shapes an
@@ -241,7 +244,7 @@ exists "rotate rotates regardless of size" "$LOGS/busy.example.com.access.log.1"
 for word in "rm -rf /" "rotate; id" "reload && cat /etc/shadow" "reopen" \
             "TEST" "test " "" "\$(id)" "../../bin/sh"; do
     : > "$NGINX_CALLS"
-    out="$(run_command "$word")"
+    run_command "$word" > /dev/null 2>&1
     code=$?
     if [ "$code" -ne 127 ]; then
         fail "'$word' is refused" "exit $code, expected 127"

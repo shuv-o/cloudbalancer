@@ -7,7 +7,7 @@
     certs renew test test-local bench-up bench bench-log panel-build \
     panel-dev panel-ca panel-cert panel-revoke panel-status \
     bench-protection backup backup-list restore backup-key fix-permissions \
-    lock repair-config
+    lock repair-config rotate-logs logs-sizes
 .DEFAULT_GOAL := help
 
 help: ## Show this help

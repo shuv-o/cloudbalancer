@@ -199,8 +199,9 @@ dir=${CLOUDBALANCER_LOG_DIR:-/var/log/nginx}
 threshold=${CLOUDBALANCER_LOG_ROTATE_BYTES:-67108864}
 keep=${CLOUDBALANCER_LOG_KEEP:-7}
 every=${CLOUDBALANCER_LOG_CHECK_SECONDS:-60}
+daily=${CLOUDBALANCER_LOG_MAX_AGE_MINUTES:-1440}
 
-echo "SETTINGS $threshold $keep $every"
+echo "SETTINGS $threshold $keep $every $daily"
 echo "TOTAL $(du -sk "$dir" 2>/dev/null | cut -f1)"
 
 # Plain ps and grep rather than pgrep -f: the image is BusyBox, and its
@@ -228,10 +229,26 @@ else
     every=$(awk '/^SETTINGS/ {print $4}' <<< "$log_report")
     total_kb=$(awk '/^TOTAL/ {print $2}' <<< "$log_report")
 
+    # Two rotators on one set of files fight over the same numbering, and
+    # the host one is invisible to this repo -- it does not exist on a fresh
+    # install, and it breaks if the volume is ever renamed.
+    for conf in /etc/logrotate.d/cloudbalancer /etc/logrotate.d/nginx-docker; do
+        if [[ -f "$conf" ]] && grep -q "cloudbalancer_nginx_logs\|/var/log/nginx" "$conf" 2>/dev/null; then
+            no "$conf also rotates these files; two rotators will collide"
+            printf '       Disable it:  mv %s %s.disabled\n' "$conf" "$conf"
+            printf '       The gateway rotates them itself now, and ships that config with the app.\n'
+        fi
+    done
+
     if [[ "$every" == "0" ]]; then
         no "rotation is disabled (NGINX_LOG_CHECK_SECONDS=0); these files grow without limit"
     elif grep -q '^WATCHER running' <<< "$log_report"; then
-        ok "rotation active: over $((threshold / 1048576))MB, keeping $keep, checked every ${every}s"
+        daily=$(awk '/^SETTINGS/ {print $5}' <<< "$log_report")
+        when="over $((threshold / 1048576))MB"
+        if [[ -n "${daily:-}" && "$daily" != "0" ]]; then
+            when="$when or every $((daily / 60))h"
+        fi
+        ok "rotation active: $when, keeping $keep, checked every ${every}s"
     else
         no "the reload watcher is not running, so nothing rotates these files"
     fi

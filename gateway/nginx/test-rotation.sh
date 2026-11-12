@@ -68,9 +68,11 @@ CLOUDBALANCER_LOG_KEEP=4
 # Off for most of the checks below, which rotate the same file repeatedly in
 # well under a second. It has a check of its own at the end.
 CLOUDBALANCER_LOG_MIN_INTERVAL_SECONDS=0
+# Daily rotation is driven by a stamp file; the checks below drive it by hand.
+CLOUDBALANCER_LOG_MAX_AGE_MINUTES=1440
 export CLOUDBALANCER_CONTROL_DIR CLOUDBALANCER_LOG_DIR
 export CLOUDBALANCER_LOG_ROTATE_BYTES CLOUDBALANCER_LOG_KEEP
-export CLOUDBALANCER_LOG_MIN_INTERVAL_SECONDS
+export CLOUDBALANCER_LOG_MIN_INTERVAL_SECONDS CLOUDBALANCER_LOG_MAX_AGE_MINUTES
 
 CLOUDBALANCER_WATCHER_SOURCED=1
 export CLOUDBALANCER_WATCHER_SOURCED
@@ -166,6 +168,56 @@ rotate_logs force > /dev/null 2>&1
 exists "a forced rotation ignores the interval" \
     "$LOGS/throttle.example.com.access.log.3.gz"
 ROTATE_MIN_INTERVAL=0
+
+echo "daily rotation"
+
+# --- the stamp decides, not any log's mtime --------------------------------
+rm -f "$LOGS/.last-rotation"
+if rotation_due_by_age; then
+    fail "a first run creates the stamp rather than rotating" "it said a rotation was due"
+else
+    ok "a first run creates the stamp rather than rotating"
+fi
+exists "and the stamp is there afterwards" "$LOGS/.last-rotation"
+
+if rotation_due_by_age; then
+    fail "a fresh stamp means nothing is due" "it said a rotation was due"
+else
+    ok "a fresh stamp means nothing is due"
+fi
+
+touch -t 200001010000 "$LOGS/.last-rotation"
+if rotation_due_by_age; then
+    ok "an old stamp means a daily rotation is due"
+else
+    fail "an old stamp means a daily rotation is due" "it said nothing was due"
+fi
+
+# --- a daily rotation takes small files that the size trigger would skip ---
+rm -f "$LOGS"/daily.example.com.access.log*
+echo "one line, far under the threshold" > "$LOGS/daily.example.com.access.log"
+rotate_logs size > /dev/null 2>&1
+absent "the size trigger leaves a small log alone" "$LOGS/daily.example.com.access.log.1"
+rotate_logs age > /dev/null 2>&1
+exists "the daily one takes it" "$LOGS/daily.example.com.access.log.1"
+
+# --- but not an empty one ---------------------------------------------------
+rm -f "$LOGS"/silent.example.com.access.log*
+: > "$LOGS/silent.example.com.access.log"
+rotate_logs age > /dev/null 2>&1
+absent "an empty log is not rotated daily into a chain of nothing" \
+    "$LOGS/silent.example.com.access.log.1"
+
+# --- the container's own stdout/stderr are symlinks and must not move -------
+ln -sf /dev/stdout "$LOGS/stdout.log"
+rotate_logs force > /dev/null 2>&1
+absent "a symlinked log is never rotated" "$LOGS/stdout.log.1"
+if [ -L "$LOGS/stdout.log" ]; then
+    ok "and the symlink itself is intact"
+else
+    fail "and the symlink itself is intact" "it is no longer a symlink"
+fi
+rm -f "$LOGS/stdout.log"
 
 echo "commands"
 

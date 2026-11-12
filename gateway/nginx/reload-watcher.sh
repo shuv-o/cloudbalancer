@@ -44,7 +44,7 @@ STALE_MINUTES="${CLOUDBALANCER_RESULT_TTL_MINUTES:-10}"
 # otherwise accumulate a year of near-empty files to no purpose.
 LOG_DIR="${CLOUDBALANCER_LOG_DIR:-/var/log/nginx}"
 ROTATE_BYTES="${CLOUDBALANCER_LOG_ROTATE_BYTES:-67108864}"
-ROTATE_KEEP="${CLOUDBALANCER_LOG_KEEP:-7}"
+ROTATE_KEEP="${CLOUDBALANCER_LOG_KEEP:-14}"
 # How many passes of the one-second loop between size checks.
 ROTATE_EVERY="${CLOUDBALANCER_LOG_CHECK_SECONDS:-60}"
 # The shortest gap between two rotations of the same file.
@@ -56,6 +56,14 @@ ROTATE_EVERY="${CLOUDBALANCER_LOG_CHECK_SECONDS:-60}"
 # its threshold is the cheaper mistake, and this bounds the overshoot to one
 # interval's worth of traffic rather than letting it run.
 ROTATE_MIN_INTERVAL="${CLOUDBALANCER_LOG_MIN_INTERVAL_SECONDS:-900}"
+# Rotate everything once a day as well, regardless of size.
+#
+# Size alone would leave a quiet domain with one file covering months, and
+# "what did this domain serve last Tuesday" is a question people actually
+# ask. A day per file is what makes zgrep useful. 0 turns it off and leaves
+# only the size trigger.
+ROTATE_MAX_AGE_MINUTES="${CLOUDBALANCER_LOG_MAX_AGE_MINUTES:-1440}"
+ROTATE_STAMP="$LOG_DIR/.last-rotation"
 
 mkdir -p "$REQUESTS" "$RESULTS"
 
@@ -131,23 +139,53 @@ rotate_one() {
 }
 
 # Returns 0 if it rotated anything. `force` ignores the size threshold.
+# Has a day passed since the last daily rotation?
+#
+# A stamp file rather than the age of any log: a log that is written to
+# every second always has a recent mtime, so its own age says nothing about
+# when it was last rotated. On a first run the stamp is created and nothing
+# rotates, which is right -- the files in place then are of unknown age and
+# rotating them would start the chain with a partial day.
+rotation_due_by_age() {
+    [ "$ROTATE_MAX_AGE_MINUTES" -gt 0 ] || return 1
+
+    if [ ! -f "$ROTATE_STAMP" ]; then
+        touch "$ROTATE_STAMP" 2>/dev/null
+        return 1
+    fi
+
+    [ -n "$(find "$ROTATE_STAMP" -mmin "+$ROTATE_MAX_AGE_MINUTES" 2>/dev/null)" ]
+}
+
 rotate_logs() {
     _rot_mode="${1:-size}"
     _rot_done=""
 
     for _rot_candidate in "$LOG_DIR"/*.log; do
+        # access.log and error.log in the stock image are symlinks to the
+        # container's stdout and stderr. Renaming one would take the
+        # container's logging with it.
+        [ -L "$_rot_candidate" ] && continue
         [ -f "$_rot_candidate" ] || continue
 
         if [ "$_rot_mode" != "force" ]; then
-            [ "$(file_size "$_rot_candidate")" -ge "$ROTATE_BYTES" ] || continue
+            # An empty file rotated daily produces a chain of empty files
+            # and loses the one real generation off the end of it.
+            [ -s "$_rot_candidate" ] || continue
+        fi
 
+        if [ "$_rot_mode" = "size" ]; then
+            [ "$(file_size "$_rot_candidate")" -ge "$ROTATE_BYTES" ] || continue
+        fi
+
+        if [ "$_rot_mode" != "force" ]; then
             # find -newermt is not in BusyBox. -mmin is, and minutes are
             # resolution enough for something measured in a quarter of an
             # hour.
             if [ "$ROTATE_MIN_INTERVAL" -gt 0 ] && [ -f "$_rot_candidate.1" ]; then
                 _rot_mins=$(( (ROTATE_MIN_INTERVAL + 59) / 60 ))
                 if [ -z "$(find "$_rot_candidate.1" -mmin "+$_rot_mins" 2>/dev/null)" ]; then
-                    log "$(basename "$_rot_candidate") is over the threshold, but its .1 is younger than ${_rot_mins}m and may not have been read yet; waiting"
+                    log "$(basename "$_rot_candidate") is due, but its .1 is younger than ${_rot_mins}m and may not have been read yet; waiting"
                     continue
                 fi
             fi
@@ -158,7 +196,7 @@ rotate_logs() {
     done
 
     if [ -z "$_rot_done" ]; then
-        echo "nothing over $ROTATE_BYTES bytes"
+        echo "nothing to rotate ($_rot_mode)"
         return 1
     fi
 
@@ -253,6 +291,11 @@ while :; do
     ticks=$((ticks + 1))
     if [ "$ROTATE_EVERY" -gt 0 ] && [ "$ticks" -ge "$ROTATE_EVERY" ]; then
         ticks=0
-        rotate_logs >/dev/null 2>&1
+        if rotation_due_by_age; then
+            rotate_logs age >/dev/null 2>&1
+            touch "$ROTATE_STAMP"
+        else
+            rotate_logs size >/dev/null 2>&1
+        fi
     fi
 done

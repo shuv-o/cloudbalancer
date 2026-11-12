@@ -98,8 +98,38 @@ fi
 # on start, but running them here first means a migration failure stops the
 # deploy rather than leaving a container restart-looping.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# A container that fails its healthcheck reports "dependency failed to start"
+# and nothing else. The reason is in its log, and the log is one command away
+# that nobody runs while reading an error that sounds like a Compose problem.
+#
+# So it is printed here. The failure that prompted this was Redis coming up
+# unhealthy after every capability was dropped from it -- its entrypoint could
+# no longer chown its data directory or drop to its own user, and said so in a
+# line nobody saw.
+# ---------------------------------------------------------------------------
+explain_unhealthy() {
+    local service
+    for service in "$@"; do
+        local id
+        id=$(compose "$TAG" ps -q "$service" 2>/dev/null | head -1)
+        [ -n "$id" ] || continue
+
+        local state
+        state=$(docker inspect -f '{{.State.Health.Status}}' "$id" 2>/dev/null || echo unknown)
+        [ "$state" = healthy ] && continue
+
+        printf '\n\033[31m%s is %s.\033[0m Its last output:\n\n' "$service" "$state"
+        docker logs --tail 30 "$id" 2>&1 | sed 's/^/    /'
+        printf '\n'
+    done
+}
+
 log "Starting the data stores"
-compose "$TAG" up -d postgres redis
+if ! compose "$TAG" up -d --wait postgres redis; then
+    explain_unhealthy postgres redis
+    exit 1
+fi
 
 log "Applying migrations"
 # No --no-deps: compose then honours depends_on and waits for Postgres to

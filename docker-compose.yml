@@ -260,6 +260,12 @@ services:
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
+    # Redis starts as root, chowns /data, then calls setpriv to drop to the
+    # redis user. With every capability dropped it cannot do either, and the
+    # container comes up unhealthy with nothing in its log that names the
+    # cause. These five are what that sequence needs; everything genuinely
+    # dangerous -- NET_RAW, NET_ADMIN, SYS_PTRACE, MKNOD -- stays dropped.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     container_name: cloudbalancer-redis
     logging: *logging
     deploy:
@@ -289,6 +295,12 @@ services:
   # ---------------------------------------------------------------------------
   prometheus:
     image: prom/prometheus:v3.1.0
+    labels:
+      # The image sets USER itself, so nothing changes identity at runtime
+      # and dropping every capability costs it nothing. Stated rather than
+      # assumed: the alternative is pinning a uid here and guessing wrong,
+      # which is how a volume stops being writable on an image upgrade.
+      cloudbalancer.unprivileged-image: "true"
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
@@ -328,6 +340,12 @@ services:
 
   alertmanager:
     image: prom/alertmanager:v0.28.0
+    labels:
+      # The image sets USER itself, so nothing changes identity at runtime
+      # and dropping every capability costs it nothing. Stated rather than
+      # assumed: the alternative is pinning a uid here and guessing wrong,
+      # which is how a volume stops being writable on an image upgrade.
+      cloudbalancer.unprivileged-image: "true"
     container_name: cloudbalancer-alertmanager
     logging: *logging
     security_opt:
@@ -341,14 +359,24 @@ services:
     volumes:
       - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager
-    # The shared secret the control plane checks. Written from .env rather
-    # than baked into the config, so rotating it does not mean editing a file
-    # that is in git.
+    # The shared secret the control plane checks, written from the
+    # environment rather than into the config file, so rotating it does not
+    # mean editing something that is in git.
+    #
+    # $$ so the shell expands it, not Compose: a Compose substitution bakes
+    # the secret into the container's command, where `docker inspect` shows
+    # it to anyone who can reach the daemon.
+    #
+    # Into /alertmanager, the data volume, which the image creates owned by
+    # the unprivileged user it runs as. /etc/alertmanager is the image's own
+    # directory and not somewhere a process running as nobody should expect
+    # to write.
     entrypoint:
       - /bin/sh
       - -c
       - |
-        printf '%s' "${ALERTMANAGER_WEBHOOK_SECRET:-}" > /etc/alertmanager/webhook-secret
+        umask 077
+        printf '%s' "$${ALERTMANAGER_WEBHOOK_SECRET:-}" > /alertmanager/webhook-secret
         exec /bin/alertmanager \
           --config.file=/etc/alertmanager/alertmanager.yml \
           --storage.path=/alertmanager
@@ -361,6 +389,12 @@ services:
 
   grafana:
     image: grafana/grafana:11.5.1
+    labels:
+      # The image sets USER itself, so nothing changes identity at runtime
+      # and dropping every capability costs it nothing. Stated rather than
+      # assumed: the alternative is pinning a uid here and guessing wrong,
+      # which is how a volume stops being writable on an image upgrade.
+      cloudbalancer.unprivileged-image: "true"
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]

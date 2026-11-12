@@ -208,6 +208,59 @@ jobs:
           fi
           echo "No Docker CLI."
 
+      - name: Every hardened service can still start
+        run: |
+          python - <<'PY'
+          import sys, yaml
+
+          # Dropping every capability from an image that drops privileges at
+          # runtime produces a container that comes up unhealthy with nothing
+          # in its log naming the cause. Redis shipped that way once: its
+          # entrypoint starts as root, chowns /data and calls setpriv, all of
+          # which need capabilities that had been taken away.
+          #
+          # The rule: a service that drops ALL must either run as a declared
+          # user -- so nothing has to change identity at runtime -- or be
+          # given back the capabilities that changing identity needs.
+          NEEDED = {"SETUID", "SETGID"}
+
+          compose = yaml.safe_load(open("docker-compose.yml"))
+          problems = []
+
+          for name, service in compose["services"].items():
+              dropped = {c.upper() for c in (service.get("cap_drop") or [])}
+              if "ALL" not in dropped:
+                  continue
+
+              added = {c.upper() for c in (service.get("cap_add") or [])}
+              labels = service.get("labels") or {}
+
+              if service.get("user"):
+                  continue
+              if str(labels.get("cloudbalancer.unprivileged-image", "")).lower() == "true":
+                  # The image sets USER itself. Declared on the service so a
+                  # reader can see why dropping everything is safe here, and
+                  # so the claim is somewhere it can be rechecked on an
+                  # image upgrade.
+                  continue
+              if NEEDED <= added:
+                  continue
+
+              problems.append(
+                  f"{name}: drops ALL capabilities, declares no user, and "
+                  f"is not given back {sorted(NEEDED - added)}. Either add "
+                  f"them, set `user:`, or -- if the image already sets USER "
+                  f"itself -- label it cloudbalancer.unprivileged-image: "
+                  f'"true" so the claim is written down.'
+              )
+
+          for problem in problems:
+              print(f"::error::{problem}")
+          if problems:
+              sys.exit(1)
+          print(f"Checked {len(compose['services'])} services.")
+          PY
+
       - name: Nothing mounts the Docker socket
         run: |
           if grep -n 'docker\.sock' docker-compose.yml; then

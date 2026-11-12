@@ -51,6 +51,15 @@ class Command(BaseCommand):
         if not options["no_prune"]:
             result = backup_prune()
             self.stdout.write(
-                f"Pruned {result['removed']} backups and {result['orphans']} "
-                f"orphans, freeing {result['bytes_freed']:,} bytes"
+                f"Pruned {result['removed']} backups, freeing "
+                f"{result['bytes_freed']:,} bytes"
             )
+            if result["adopted"]:
+                # Worth saying out loud rather than counting silently: the
+                # usual reason an archive has no record is that the database
+                # was restored from an older one, and knowing that happened
+                # is more useful than the number.
+                self.stdout.write(
+                    f"Adopted {result['adopted']} archive(s) found on disk "
+                    "with no record of them"
+                )

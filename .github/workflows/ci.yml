@@ -415,6 +415,45 @@ jobs:
           print(f"All {checked} referenced certificate files exist.")
           PY
 
+      - name: An unconfigured hostname does not reach the control panel
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+
+          # conf.d loads alphabetically, so without an explicit default_server
+          # on 443 the first block that listens there becomes the default --
+          # and that is 05-panel.conf. Every unconfigured HTTPS hostname
+          # pointing at the gateway was being answered with the admin panel.
+          conf = pathlib.Path("${{ runner.temp }}/conf.d")
+          defaults = []
+          for path in sorted(conf.glob("*.conf")):
+              text = path.read_text()
+              for line in text.splitlines():
+                  stripped = line.strip()
+                  if stripped.startswith("listen") and "default_server" in stripped:
+                      if re.search(r"\b443\b", stripped):
+                          defaults.append((path.name, stripped))
+
+          if not defaults:
+              print("::error::no server block claims default_server on 443.")
+              print("::error::Nginx then picks the first 443 listener, which is the panel.")
+              sys.exit(1)
+
+          owners = {name for name, _ in defaults}
+          if owners != {"default.conf"}:
+              for name, line in defaults:
+                  print(f"::error::{name} claims the 443 default server: {line}")
+              print("::error::It belongs to default.conf, which rejects unknown names.")
+              sys.exit(1)
+
+          if "ssl_reject_handshake on;" not in (conf / "default.conf").read_text():
+              print("::error::the 443 default server does not reject the handshake,")
+              print("::error::so it will serve something to a hostname nobody configured.")
+              sys.exit(1)
+
+          print(f"443 default server is default.conf, and rejects: {len(defaults)} listen lines.")
+          PY
+
       - name: nginx -t
         run: |
           # The --add-host is now belt and braces: the management address

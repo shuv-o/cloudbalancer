@@ -145,37 +145,47 @@ else
     no "could not render a comparison -- is the control plane running?"
 fi
 
-hr "Ownership the management plane needs"
+hr "Can the management plane write what it needs to?"
 
-# Asked here because the symptom -- a PermissionError deep in collectstatic,
-# or a container restarting -- is several steps from the cause, and the logs
-# that show it are historical: after running `make fix-permissions` they still
-# contain every failure from before it.
-for path in management/staticfiles gateway/nginx/conf.d; do
-    if [[ ! -e "$path" ]]; then
-        no "$path does not exist"
-        continue
-    fi
-    owner=$(stat -c '%u' "$path" 2>/dev/null || stat -f '%u' "$path" 2>/dev/null)
-    if [[ "$owner" == "10001" ]]; then
-        ok "$path belongs to the management plane"
+# Asked of the container, not inferred from uids on the host.
+#
+# The first version of this stat'd each volume's mountpoint and compared the
+# owner to 10001. It reported two unwritable directories as fine, and the
+# symptom surfaced days later as certbot failing to create a challenge file.
+# Ownership is a proxy; whether a write succeeds is the question, and the
+# container is the only thing that can answer it.
+writable_report=$(docker compose exec -T django sh -c '
+for d in /app/staticfiles /etc/nginx/conf.d /etc/nginx/ssl /etc/letsencrypt \
+         /var/lib/letsencrypt /var/www/acme /var/backups/cloudbalancer \
+         /var/run/cloudbalancer
+do
+    [ -d "$d" ] || { echo "MISSING $d"; continue; }
+    if touch "$d/.cb-probe" 2>/dev/null; then
+        rm -f "$d/.cb-probe"
+        echo "OK $d"
     else
-        no "$path belongs to uid ${owner:-?}, not 10001 -- run: make fix-permissions"
+        echo "NO $d $(stat -c %u:%a "$d" 2>/dev/null)"
     fi
-done
+done' 2>/dev/null)
 
-for volume in letsencrypt ssl_certs acme_challenge nginx_control; do
-    name=$(docker volume ls -q | grep -E "_${volume}$" | head -1)
-    [[ -n "$name" ]] || continue
-    mount=$(docker volume inspect -f '{{.Mountpoint}}' "$name" 2>/dev/null) || continue
-    [[ -d "$mount" ]] || continue
-    owner=$(stat -c '%u' "$mount" 2>/dev/null)
-    if [[ "$owner" == "10001" ]]; then
-        ok "volume ${volume} belongs to the management plane"
-    else
-        no "volume ${volume} belongs to uid ${owner:-?}, not 10001 -- run: make fix-permissions"
+if [[ -z "$writable_report" ]]; then
+    no "could not ask the control plane -- is it running?"
+else
+    while read -r verdict path detail; do
+        case "$verdict" in
+            OK)      ok "$path" ;;
+            NO)      no "$path is not writable (owner:mode $detail)" ;;
+            MISSING) no "$path does not exist in the container" ;;
+        esac
+    done <<< "$writable_report"
+
+    if printf '%s' "$writable_report" | grep -q '^NO '; then
+        printf '\n      \033[33mRun: make fix-permissions\033[0m\n'
+        printf '      \033[33mA path owned by 101 belongs to Nginx and a volume took its\033[0m\n'
+        printf '      \033[33mownership from that image; one owned by 0 predates the control\033[0m\n'
+        printf '      \033[33mplane running unprivileged. Both are the same repair.\033[0m\n'
     fi
-done
+fi
 
 hr "Exposure"
 # `docker compose ps` lists published ports as a fact. It does not say whether

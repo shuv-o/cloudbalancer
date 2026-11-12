@@ -35,6 +35,7 @@ for directory in \
     /etc/nginx/conf.d \
     /etc/nginx/ssl \
     /etc/letsencrypt \
+    /var/lib/letsencrypt \
     /var/www/acme \
     /var/backups/cloudbalancer \
     /var/run/cloudbalancer

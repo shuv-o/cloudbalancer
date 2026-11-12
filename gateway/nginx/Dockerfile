@@ -57,18 +57,24 @@ COPY reload-watcher.sh /usr/local/bin/cloudbalancer-reload-watcher.sh
 COPY docker-entrypoint.d/40-cloudbalancer-reload-watcher.sh \
      /docker-entrypoint.d/40-cloudbalancer-reload-watcher.sh
 
-# The control directory is a volume shared with the management plane, which
-# runs as uid 10001 and has to write requests into it. A named volume takes
-# its ownership from whichever image first provides the path -- if that is
-# this one, the other side gets a directory it cannot write. So it is created
-# owned by the side that cannot simply override permissions; Nginx reads and
-# writes it as root either way.
+# Three directories here are shared with the management plane, and a named
+# volume takes its ownership from whichever image first provides the path. If
+# that is this one, the other side gets a directory it cannot write -- so each
+# is created owned by 10001, the side that cannot simply override permissions.
+# Nginx uses all three as root and does not care.
+#
+#   /var/run/cloudbalancer  the panel writes reload requests, this reads them
+#   /var/www/acme           certbot writes challenge files, this serves them
+#   /etc/nginx/ssl          the panel writes certificates, this reads them
+#
+# /var/cache/nginx is the exception and stays with nginx: this image writes
+# that one, and handing it over would stop the gateway caching.
 RUN chmod +x /usr/local/bin/cloudbalancer-reload-watcher.sh \
              /docker-entrypoint.d/40-cloudbalancer-reload-watcher.sh \
     && mkdir -p /var/www/acme /var/cache/nginx /etc/nginx/ssl /etc/letsencrypt \
                 /var/run/cloudbalancer/requests /var/run/cloudbalancer/results \
-    && chown -R nginx:nginx /var/www/acme /var/cache/nginx \
-    && chown -R 10001:10001 /var/run/cloudbalancer
+    && chown -R nginx:nginx /var/cache/nginx \
+    && chown -R 10001:10001 /var/run/cloudbalancer /var/www/acme /etc/nginx/ssl
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD nginx -t || exit 1

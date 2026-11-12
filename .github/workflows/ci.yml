@@ -438,6 +438,7 @@ jobs:
           # restart-looped on a gateway is why this exists. Whatever options
           # docker-compose.yml gives this service, they are applied here, so
           # the next one fails on a runner instead.
+          pip install --quiet pyyaml
           python - <<'PY' > /tmp/nginx-opts
           import shlex, yaml
 

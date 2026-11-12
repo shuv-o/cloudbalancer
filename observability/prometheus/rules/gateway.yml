@@ -1,0 +1,148 @@
+# =============================================================================
+# Alert rules for the data plane.
+#
+# prometheus.yml has referenced /etc/prometheus/rules/*.yml since the stack
+# was written. The directory was never mounted, so Prometheus has been loading
+# an empty glob and reporting nothing -- which looks exactly like a system with
+# no problems.
+#
+# These cover what Prometheus can see: whether the gateway is up, what it is
+# returning, and what it costs. Conditions only the control plane knows about
+# -- certificate expiry, backup verification, a refused deploy -- are raised
+# in Django instead and arrive in the same place.
+#
+# Every rule has a `for` clause. A gateway that returns one 502 during a
+# backend restart is not an incident, and an alerting system that says it is
+# gets muted within a week.
+# =============================================================================
+groups:
+  - name: gateway-availability
+    interval: 30s
+    rules:
+      - alert: GatewayDown
+        expr: up{job="nginx-gateway"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: The gateway is not answering
+          description: >-
+            Prometheus has not been able to scrape Nginx for a minute. If this
+            is right, every domain this gateway serves is down.
+          runbook: >-
+            Check `docker compose ps nginx` and its logs. The scrape endpoint
+            is on port 8080 inside the Compose network, so this can also mean
+            the status endpoint is refusing the scraper rather than the
+            gateway being down -- check the allow list in nginx.conf if
+            traffic is still flowing.
+
+      - alert: ControlPlaneDown
+        expr: up{job="django-management"} == 0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: The control plane is not answering
+          description: >-
+            Proxied traffic is unaffected -- Nginx serves without Django -- but
+            nothing can be changed, no certificate will renew, and no health
+            check is running.
+          runbook: >-
+            `docker compose logs django`. A control plane that is down while
+            traffic flows is the least urgent outage this stack has, which is
+            why it waits three minutes.
+
+  - name: gateway-traffic
+    interval: 30s
+    rules:
+      - alert: HighServerErrorRate
+        expr: >-
+          sum(rate(nginx_vts_server_requests_total{host!="*",host!="_",code="5xx"}[5m]))
+          /
+          clamp_min(sum(rate(nginx_vts_server_requests_total{host!="*",host!="_",code=~"[1-5]xx"}[5m])), 1)
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: More than 5% of responses are server errors
+          description: >-
+            Sustained for five minutes across every domain. The cause is
+            usually a backend rather than the gateway.
+          runbook: >-
+            The Overview page breaks this down per domain and per upstream.
+            Check the Backends page for failing health checks first.
+
+      - alert: UpstreamErrorRate
+        expr: >-
+          sum by (upstream) (rate(nginx_vts_upstream_requests_total{code="5xx"}[5m]))
+          /
+          clamp_min(sum by (upstream) (rate(nginx_vts_upstream_requests_total{code=~"[1-5]xx"}[5m])), 1)
+          > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Upstream {{ $labels.upstream }} is failing more than 10% of requests"
+          description: >-
+            One backend is unhealthy while others may be fine, so this may not
+            be visible in the overall error rate.
+          runbook: >-
+            Check that backend's instances on the Backends page.
+
+      - alert: GatewayLatencyBudgetExceeded
+        expr: >-
+          (
+            sum(rate(nginx_vts_server_request_seconds_total{host!="*",host!="_"}[5m]))
+            - (sum(rate(nginx_vts_upstream_response_seconds_total[5m])) or vector(0))
+          )
+          /
+          clamp_min(sum(rate(nginx_vts_server_requests_total{host!="*",host!="_",code=~"[1-5]xx"}[5m])), 1)
+          > 0.005
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: The gateway is adding more than 5ms per request
+          description: >-
+            Total request time minus upstream time, which is the proxy's own
+            cost. The design budget is under a millisecond; this fires at five,
+            sustained for fifteen minutes, so it means something changed rather
+            than that a single request was slow.
+          runbook: >-
+            Usually TLS handshakes from lost keepalive pools after a reload, a
+            full cache disk, or a rate-limit zone under contention. The
+            Overview page charts this over time -- compare against when it
+            started.
+
+  - name: gateway-resources
+    interval: 1m
+    rules:
+      - alert: NginxConnectionsClimbing
+        expr: nginx_vts_main_connections{status="waiting"} > 2000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Over 2000 idle keepalive connections held open
+          description: >-
+            Each costs a file descriptor and some memory. Climbing steadily
+            usually means clients are opening connections faster than
+            keepalive_timeout closes them.
+          runbook: >-
+            Check Security -> Traffic limits for the per-address connection
+            cap, which is what stops one client doing this.
+
+      - alert: PrometheusScrapeFailing
+        expr: up == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus cannot scrape {{ $labels.job }}"
+          description: >-
+            Ten minutes of failed scrapes. Any alert that depends on this
+            target is now silent rather than quiet, which is the failure mode
+            alerting systems are worst at showing.
+          runbook: >-
+            Check the target at http://127.0.0.1:9090/targets for the error.

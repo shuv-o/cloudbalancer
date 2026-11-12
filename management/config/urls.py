@@ -22,4 +22,5 @@ urlpatterns = [
     path("api/v1/monitoring/", include("apps.monitoring.urls")),
     path("api/v1/gateway/", include("apps.gateway.urls")),
     path("api/v1/backups/", include("apps.backups.urls")),
+    path("api/v1/alerts/", include("apps.alerts.urls")),
 ]

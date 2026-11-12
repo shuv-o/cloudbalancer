@@ -301,6 +301,11 @@ services:
           cpus: "1.0"
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # prometheus.yml has referenced /etc/prometheus/rules/*.yml since
+      # this stack was written. Nothing mounted it, so the glob matched
+      # nothing and no rule has ever fired -- which looks exactly like a
+      # system with no problems.
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -318,6 +323,39 @@ services:
     expose: ["9090"]
     ports:
       - "${OBSERVABILITY_BIND:-127.0.0.1}:9090:9090"
+    restart: unless-stopped
+    networks: [gateway]
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.0
+    container_name: cloudbalancer-alertmanager
+    logging: *logging
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.5"
+    volumes:
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    # The shared secret the control plane checks. Written from .env rather
+    # than baked into the config, so rotating it does not mean editing a file
+    # that is in git.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s' "${ALERTMANAGER_WEBHOOK_SECRET:-}" > /etc/alertmanager/webhook-secret
+        exec /bin/alertmanager \
+          --config.file=/etc/alertmanager/alertmanager.yml \
+          --storage.path=/alertmanager
+    expose: ["9093"]
+    ports:
+      - "${OBSERVABILITY_BIND:-127.0.0.1}:9093:9093"
+    env_file: [.env]
     restart: unless-stopped
     networks: [gateway]
 
@@ -352,6 +390,7 @@ services:
     networks: [gateway]
 
 volumes:
+  alertmanager_data:
   backups:
   nginx_control:
   postgres_data:

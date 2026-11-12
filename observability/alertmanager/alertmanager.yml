@@ -1,0 +1,49 @@
+# =============================================================================
+# Alertmanager.
+#
+# One receiver, and it is the control plane. Alertmanager could post to Slack
+# directly and for many stacks that is the right answer -- but then there are
+# two places alerts come from and two places to configure who hears them, and
+# the one nobody updated is the one that matters during an incident.
+#
+# So this deduplicates, groups and silences, and hands the result to Django,
+# which owns the channels and keeps the history.
+# =============================================================================
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: cloudbalancer
+  # By name and severity: ten instances of one problem is one message.
+  group_by: [alertname, severity]
+  # Long enough to collect a burst that is really one event, short enough that
+  # somebody hears about an outage while it is still happening.
+  group_wait: 30s
+  group_interval: 5m
+  # Re-sending is the control plane's job -- it knows whether the alert has
+  # been acknowledged, and Alertmanager does not.
+  repeat_interval: 24h
+
+  routes:
+    # Critical alerts skip most of the grouping delay.
+    - matchers: [severity="critical"]
+      receiver: cloudbalancer
+      group_wait: 10s
+      group_interval: 2m
+
+receivers:
+  - name: cloudbalancer
+    webhook_configs:
+      - url: http://django:8000/api/v1/alerts/prometheus/
+        send_resolved: true
+        max_alerts: 0
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /etc/alertmanager/webhook-secret
+
+inhibit_rules:
+  # If the whole gateway is down, its error rate is not news.
+  - source_matchers: [alertname="GatewayDown"]
+    target_matchers: [severity=~"warning|critical"]
+    equal: [job]

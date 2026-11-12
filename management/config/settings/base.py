@@ -119,6 +119,7 @@ INSTALLED_APPS = [
     "apps.monitoring",
     "apps.gateway",
     "apps.backups",
+    "apps.alerts",
 ]
 
 # =============================================================================
@@ -239,7 +240,62 @@ CELERY_BEAT_SCHEDULE = {
         "task": "backups.run_scheduled",
         "schedule": crontab(hour="2", minute="41"),
     },
+    # Often enough that a certificate expiring or a backend going down is
+    # noticed while somebody is still at work, rarely enough that a condition
+    # which fixes itself in a minute is never mentioned at all.
+    "alert-checks": {
+        "task": "alerts.run_checks",
+        "schedule": float(os.environ.get("ALERT_CHECK_INTERVAL", 300)),
+    },
+    "prune-alerts": {
+        "task": "alerts.prune",
+        "schedule": crontab(hour="4", minute="51"),
+    },
 }
+
+# =============================================================================
+# Alerts
+#
+# One path from "something is wrong" to "somebody was told". Prometheus
+# alerts arrive through an Alertmanager webhook; conditions only the control
+# plane can see -- certificate expiry, backup verification, a refused deploy
+# -- are raised directly. Both end up in one history with one set of
+# channels, because two notification paths means two sets to keep in step and
+# the one nobody updated is the one that matters.
+# =============================================================================
+ALERT_CHECK_INTERVAL = int(os.environ.get("ALERT_CHECK_INTERVAL", 300))
+# How long before a still-firing alert is mentioned again. Acknowledging one
+# stops this for that alert.
+ALERT_REPEAT_MINUTES = int(os.environ.get("ALERT_REPEAT_MINUTES", 60))
+ALERT_RETENTION_DAYS = int(os.environ.get("ALERT_RETENTION_DAYS", 90))
+ALERT_HTTP_TIMEOUT = float(os.environ.get("ALERT_HTTP_TIMEOUT", 10))
+# Put in the body of every notification, so a message is one click from the
+# page that explains it.
+ALERT_PANEL_URL = os.environ.get("ALERT_PANEL_URL", "")
+ALERTMANAGER_WEBHOOK_SECRET = os.environ.get("ALERTMANAGER_WEBHOOK_SECRET", "")
+
+ALERT_CERT_WARNING_DAYS = int(os.environ.get("ALERT_CERT_WARNING_DAYS", 14))
+ALERT_CERT_CRITICAL_DAYS = int(os.environ.get("ALERT_CERT_CRITICAL_DAYS", 3))
+ALERT_DISK_WARNING_PERCENT = float(os.environ.get("ALERT_DISK_WARNING_PERCENT", 15))
+ALERT_DISK_CRITICAL_PERCENT = float(os.environ.get("ALERT_DISK_CRITICAL_PERCENT", 5))
+
+# =============================================================================
+# Email
+#
+# Only used for alerts. Unset means the email channel refuses to be used
+# rather than silently discarding messages, which is what Django's default
+# console backend would do in production.
+# =============================================================================
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", 587))
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "true").lower() == "true"
+EMAIL_USE_SSL = os.environ.get("EMAIL_USE_SSL", "false").lower() == "true"
+EMAIL_TIMEOUT = int(os.environ.get("EMAIL_TIMEOUT", 15))
+DEFAULT_FROM_EMAIL = os.environ.get(
+    "DEFAULT_FROM_EMAIL", "cloudbalancer@localhost"
+)
 
 # =============================================================================
 # Backups

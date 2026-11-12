@@ -16,6 +16,7 @@ Two providers, because they ask different things of you:
 Both publish MaxMind-format files, so only the download differs and nothing
 downstream knows which was used.
 """
+import gzip
 import logging
 import shutil
 import tarfile
@@ -79,15 +80,40 @@ def _download(url: str, destination: Path) -> int:
     return written
 
 
-def _extract_mmdb(archive: Path, scratch: Path) -> Path:
-    """Pull the .mmdb out of whichever wrapper the provider used."""
-    if archive.name.endswith(".gz") and not archive.name.endswith(".tar.gz"):
-        import gzip
+# A tar header carries "ustar" at offset 257. It is the only reliable way to
+# tell one from a bare file once both are inside a gzip stream.
+TAR_MAGIC_OFFSET = 257
+TAR_MAGIC = b"ustar"
 
-        target = scratch / "database.mmdb"
-        with gzip.open(archive, "rb") as source, target.open("wb") as out:
-            shutil.copyfileobj(source, out)
-        return target
+
+def _extract_mmdb(archive: Path, scratch: Path) -> Path:
+    """
+    Pull the .mmdb out of whichever wrapper the provider used.
+
+    DB-IP publishes a gzipped database; MaxMind publishes a gzipped tar with
+    the database inside it. Both arrive as bytes with no filename worth
+    trusting -- the first version decided between them by looking at the
+    local filename, which is "download" and ends with neither, so every
+    DB-IP file was handed to tarfile and rejected with "bad checksum". That
+    error comes from tarfile and says nothing about the real problem, which
+    was that the file was never a tar.
+
+    So the content decides. Decompress the gzip layer, look for the tar
+    magic, and take the appropriate path. A provider changing its packaging
+    needs no change here.
+    """
+    target = scratch / "database.mmdb"
+
+    with gzip.open(archive, "rb") as source:
+        head = source.read(TAR_MAGIC_OFFSET + len(TAR_MAGIC))
+        is_tar = head[TAR_MAGIC_OFFSET:TAR_MAGIC_OFFSET + len(TAR_MAGIC)] == TAR_MAGIC
+
+        if not is_tar:
+            # A bare database. The bytes already read are the start of it.
+            with target.open("wb") as out:
+                out.write(head)
+                shutil.copyfileobj(source, out)
+            return target
 
     with tarfile.open(archive, "r:gz") as tar:
         for member in tar.getmembers():
@@ -95,12 +121,13 @@ def _extract_mmdb(archive: Path, scratch: Path) -> Path:
                 extracted = tar.extractfile(member)
                 if extracted is None:
                     continue
-                target = scratch / "database.mmdb"
                 with target.open("wb") as out:
                     shutil.copyfileobj(extracted, out)
                 return target
 
-    raise GeoipError(f"{archive.name} contains no .mmdb file")
+    raise GeoipError(
+        "The downloaded archive is a tar but contains no .mmdb file."
+    )
 
 
 def _install(source: Path, destination: Path) -> None:

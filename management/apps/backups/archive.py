@@ -26,9 +26,11 @@ and whether it is the last chunk are authenticated as associated data. That
 last part is what makes truncating or reordering an archive a decryption
 failure rather than a shorter archive -- GCM alone would not notice either.
 """
+import errno
 import hashlib
 import json
 import os
+import shutil
 import struct
 from pathlib import Path
 from typing import BinaryIO
@@ -160,12 +162,36 @@ def _open_sealed(sealed_file: BinaryIO, out: BinaryIO, key: bytes) -> None:
 
 
 def write(source: Path, destination: Path, *, key: bytes | None) -> None:
-    """Copy `source` to `destination`, encrypting it when a key is given."""
+    """
+    Move `source` to `destination`, encrypting it when a key is given.
+
+    The unencrypted path used Path.replace, which is rename(2) and cannot
+    cross a filesystem boundary. In this container it always did: the scratch
+    directory was under /tmp, which is the image's writable layer, and the
+    destination is a mounted volume. Every unencrypted backup failed with
+    EXDEV, and the tests did not notice because they put both paths under one
+    temporary directory.
+
+    The caller now builds its scratch directory inside the destination, so
+    this is a same-filesystem rename and therefore atomic -- an archive is
+    either entirely there or not there at all. shutil.move is kept as the
+    fallback for any caller that does not, because a backup that works slowly
+    is better than one that raises.
+    """
     if key is None:
-        source.replace(destination)
+        try:
+            source.replace(destination)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            # Different filesystems. Copy and remove, which is what move does
+            # and what rename cannot.
+            shutil.move(str(source), str(destination))
         destination.chmod(0o600)
         return
 
+    # Encryption reads and rewrites every byte, so this is already a copy and
+    # the filesystem boundary does not arise.
     with source.open("rb") as plain, destination.open("wb") as out:
         _seal(plain, out, key)
     destination.chmod(0o600)

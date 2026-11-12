@@ -180,7 +180,22 @@ def backup_create(*, trigger: str = BackupRun.Trigger.SCHEDULE, actor=None) -> B
         key = load_key(settings.BACKUP_ENCRYPTION_KEY)
         components: dict = {}
 
-        with tempfile.TemporaryDirectory(prefix="cb-backup-") as scratch_name:
+        # Inside the backup directory, not /tmp.
+        #
+        # The archive is assembled here and then renamed into place, and
+        # rename(2) cannot cross a filesystem. /tmp is the image's writable
+        # layer while the destination is a mounted volume, so every backup
+        # failed with EXDEV. Building it on the destination filesystem makes
+        # that final step atomic as well as possible: the archive is either
+        # wholly there or not there at all, never half-written under a name
+        # the retention policy would later adopt.
+        #
+        # The dot prefix keeps it out of the cloudbalancer-* glob that prune
+        # and adoption walk, so a run interrupted here leaves nothing they
+        # would misread as an archive.
+        with tempfile.TemporaryDirectory(
+            prefix=".cb-backup-", dir=backup_dir()
+        ) as scratch_name:
             scratch = Path(scratch_name)
 
             dump = scratch / "database.dump"
@@ -324,7 +339,11 @@ def backup_verify(*, run: BackupRun) -> BackupRun:
                 f"version of CloudBalancer writes {MANIFEST_VERSION}."
             )
 
-        with tempfile.TemporaryDirectory(prefix="cb-verify-") as scratch_name:
+        # Same filesystem as the archive, for the same reason, and because
+        # verification unpacks a database dump that /tmp may be too small for.
+        with tempfile.TemporaryDirectory(
+            prefix=".cb-verify-", dir=backup_dir()
+        ) as scratch_name:
             scratch = Path(scratch_name)
             plain = scratch / "archive.tar.gz"
             read(archive, plain, key=key)

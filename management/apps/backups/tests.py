@@ -12,6 +12,7 @@ import shutil
 import tarfile
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -554,3 +555,106 @@ class BackupApiTests(BackupTestCase):
 
         self.assertFalse(path.exists())
         self.assertTrue((backup_dir() / first.filename).exists())
+
+class CrossFilesystemTests(BackupTestCase):
+    """
+    The archive has to land on a filesystem that is not the scratch one.
+
+    Every unencrypted backup failed in production with EXDEV: the scratch
+    directory was under /tmp, which in that container is the image's writable
+    layer, while the destination is a mounted volume. Path.replace is
+    rename(2) and cannot cross that boundary.
+
+    These tests did not catch it because they put both paths under a single
+    temporary directory, which is exactly the arrangement that cannot fail.
+    So the boundary is simulated instead.
+    """
+
+    def test_write_falls_back_when_rename_cannot_cross_devices(self):
+        import errno as errno_module
+
+        from apps.backups import archive as archive_module
+
+        source = Path(self._test_scratch()) / "payload"
+        destination = Path(backup_dir()) / "landed.tar.gz"
+        source.write_bytes(b"the archive contents")
+
+        real_replace = Path.replace
+
+        def refuse(self, target):
+            raise OSError(errno_module.EXDEV, "Invalid cross-device link")
+
+        with mock.patch.object(Path, "replace", refuse):
+            archive_module.write(source, destination, key=None)
+
+        self.assertEqual(destination.read_bytes(), b"the archive contents")
+        self.assertFalse(source.exists(), "the source should have been moved")
+        self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
+        self.assertIs(Path.replace, real_replace)
+
+    def test_a_genuine_error_is_not_swallowed_as_a_boundary(self):
+        """
+        Only EXDEV means "different filesystem". Treating every OSError that
+        way would turn a full disk or a missing directory into a slow copy
+        that fails later and somewhere else.
+        """
+        import errno as errno_module
+
+        from apps.backups import archive as archive_module
+
+        source = Path(self._test_scratch()) / "payload"
+        source.write_bytes(b"x")
+
+        def refuse(self, target):
+            raise OSError(errno_module.EACCES, "Permission denied")
+
+        with mock.patch.object(Path, "replace", refuse):
+            with self.assertRaises(OSError) as caught:
+                archive_module.write(
+                    source, Path(backup_dir()) / "nope.tar.gz", key=None
+                )
+
+        self.assertEqual(caught.exception.errno, errno_module.EACCES)
+
+    def test_the_scratch_directory_lives_beside_the_archive(self):
+        """
+        Which is what makes the final rename same-filesystem, and therefore
+        atomic. Checked by watching where it is created.
+        """
+        seen = {}
+        real = tempfile.TemporaryDirectory
+
+        def record(*args, **kwargs):
+            seen.setdefault("dir", kwargs.get("dir"))
+            seen.setdefault("prefix", kwargs.get("prefix"))
+            return real(*args, **kwargs)
+
+        with mock.patch.object(tempfile, "TemporaryDirectory", record):
+            backup_create()
+
+        self.assertEqual(str(seen["dir"]), str(backup_dir()))
+        self.assertTrue(
+            str(seen["prefix"]).startswith("."),
+            "a visible prefix would be walked by prune and adoption",
+        )
+
+    def test_an_interrupted_run_leaves_nothing_adoptable(self):
+        """
+        A half-written archive under a cloudbalancer-* name would be adopted
+        by the retention pass and counted as a backup.
+        """
+        leftover = backup_dir() / ".cb-backup-interrupted"
+        leftover.mkdir()
+        (leftover / "archive.tar.gz").write_bytes(b"half an archive")
+
+        result = backup_prune()
+
+        self.assertEqual(result["adopted"], 0)
+        self.assertEqual(BackupRun.objects.count(), 0)
+
+    def _test_scratch(self) -> str:
+        import tempfile as tf
+
+        directory = tf.mkdtemp(prefix="cb-elsewhere-")
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        return directory

@@ -16,6 +16,7 @@ import { Security } from "./pages/Security";
 import { Account, ForcePasswordChange } from "./pages/Account";
 import { Backups } from "./pages/Backups";
 import { Alerts } from "./pages/Alerts";
+import { Traffic } from "./pages/Traffic";
 import { SessionProvider } from "./lib/session";
 import { TotpSetup } from "./pages/TotpSetup";
 
@@ -45,6 +46,7 @@ const NAV = [
   // Every endpoint behind this page is admin-only, so for anyone else the
   // link leads to a screen of permission errors. Hiding it is presentation,
   // not protection -- the server refuses either way.
+  { to: "/traffic", label: "Traffic" },
   { to: "/alerts", label: "Alerts" },
   { to: "/backups", label: "Backups", adminOnly: true },
   { to: "/security", label: "Security", adminOnly: true },
@@ -161,6 +163,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
           <Route path="/certificates" element={<Certificates />} />
           <Route path="/cache" element={<Cache />} />
           <Route path="/deploys" element={<Deploys />} />
+          <Route path="/traffic" element={<Traffic />} />
           <Route path="/alerts" element={<Alerts />} />
           <Route path="/backups" element={<Backups />} />
           <Route path="/security" element={<Security user={user} />} />

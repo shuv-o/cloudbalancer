@@ -55,7 +55,7 @@ docker compose logs --tail 40 --no-log-prefix --timestamps django 2>&1 \
     | tail -25 | sed 's/^/  /'
 
 printf '\n  \033[2m(timestamps above: anything older than your last\033[0m\n'
-printf '  \033[2m `make fix-permissions` has already been dealt with)\033[0m\n'
+printf '  \033[2m run of make fix-permissions has already been dealt with)\033[0m\n'
 
 hr "Settings Django actually loaded"
 docker compose exec -T django python -c "

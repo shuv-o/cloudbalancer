@@ -262,6 +262,12 @@ CELERY_BEAT_SCHEDULE = {
         "task": "analytics.prune",
         "schedule": crontab(hour="4", minute="37"),
     },
+    # Both providers publish monthly. The 4th rather than the 1st, because a
+    # file for the new month is not always up on the first of it.
+    "update-geoip": {
+        "task": "analytics.update_geoip",
+        "schedule": crontab(day_of_month="4", hour="5", minute="12"),
+    },
 }
 
 # =============================================================================

@@ -31,3 +31,26 @@ def prune_analytics() -> dict:
     if result["clients"]:
         logger.info("Deleted %d client rows past their retention", result["clients"])
     return result
+
+
+@shared_task(name="analytics.update_geoip")
+def update_geoip() -> list:
+    """
+    Refresh the geolocation databases.
+
+    Monthly, because that is how often both providers publish. A database
+    that is a year old still answers -- incorrectly, about every network that
+    has changed hands since -- which is the kind of wrong nobody notices.
+    """
+    from apps.analytics.geoip_download import update_all
+
+    results = update_all()
+    for result in results:
+        if "error" in result:
+            logger.error("GeoIP %s: %s", result["kind"], result["error"])
+        else:
+            logger.info(
+                "GeoIP %s updated: %d bytes at %s",
+                result["kind"], result["bytes"], result["path"],
+            )
+    return results

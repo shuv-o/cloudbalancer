@@ -147,9 +147,9 @@ class _Rollup:
             counts.example = request.agent[:300]
 
 
-def _hand_over_rotated_cursors(files: list[Path]) -> int:
+def _hand_over_rotated_cursors(files: list[Path]) -> dict:
     """
-    Carry a cursor across a rename, before anything is read.
+    Decide what to do with each rotated file, before anything is read.
 
     The gateway rotates on its own schedule. When it does, the file this app
     was following is renamed to .1 and a new, empty one takes its name, so
@@ -170,48 +170,102 @@ def _hand_over_rotated_cursors(files: list[Path]) -> int:
     live cursor holds the new file's fingerprint, which does not match .1 any
     more, so a second pass adopts nothing.
 
-    Returns how many cursors moved, which the caller reports.
+    When the fingerprint does not match, the question is whether .1 holds
+    lines this app has never seen. There is no way to prove it either way, so
+    it turns on whether this app has been reading that domain at all:
+
+      * no cursor for the live file -- nothing has ever been read here, so
+        .1 is genuinely unread history and is read from the start
+      * a cursor exists, but .1 is not the file it was on -- .1 came from
+        some other arrangement, and its lines were in all likelihood already
+        counted through the live file. It is skipped to the end.
+
+    That asymmetry is deliberate. This gateway ran a host logrotate with
+    copytruncate before rotation moved into the application: .1 there is a
+    copy from byte zero of a file that was read in place, so reading it would
+    add a day of traffic that already happened. Under-counting a rotation in
+    a rare case is recoverable and visible; silently doubling a day's traffic
+    looks like growth and is never questioned.
+
+    Returns a count of each decision, which the caller reports.
     """
-    moved = 0
+    followed = skipped = 0
 
     for path in files:
         if not path.name.endswith(ROTATED_SUFFIX):
             continue
 
-        source = LogCursor.objects.filter(file_name=live_name(path.name)).first()
-        if source is None or not source.head_digest or not source.offset:
-            continue
-
-        if head_digest(path) != source.head_digest:
-            continue
-
         try:
-            size = path.stat().st_size
+            stat = path.stat()
         except OSError:
             continue
-        if size < source.offset:
-            # Not the file that offset belongs to, whatever the first bytes
-            # say. Reading it from the start is the safe answer.
+        digest = head_digest(path)
+
+        target = LogCursor.objects.filter(file_name=path.name).first()
+        if (
+            target is not None
+            and target.head_digest == digest
+            and target.inode == stat.st_ino
+        ):
+            # Already following this exact file. read_new_lines takes it from
+            # here. Identity is the fingerprint and the inode together: a
+            # second rotation puts a different file under the same name, and
+            # consecutive logs often share their first bytes.
             continue
 
-        target, _ = LogCursor.objects.get_or_create(file_name=path.name)
-        if target.head_digest == source.head_digest and target.offset >= source.offset:
+        source = LogCursor.objects.filter(file_name=live_name(path.name)).first()
+        if source is None:
+            # Nothing has ever been read for this domain, so there is nothing
+            # this file could be duplicating. Read it from the start.
             continue
 
-        LogCursor.objects.filter(pk=target.pk).update(
-            offset=source.offset,
-            inode=source.inode,
-            head_digest=source.head_digest,
+        # Is this the file the live cursor was on when it was renamed? Under
+        # copytruncate the copy is byte-identical to what was being read, so
+        # this matches there too, and resuming at the same offset is right in
+        # both cases.
+        same_file = (
+            bool(source.head_digest)
+            and digest == source.head_digest
+            and stat.st_size >= source.offset
         )
-        logger.info(
-            "%s was rotated to %s; resuming at %d rather than re-reading it",
-            source.file_name,
-            path.name,
-            source.offset,
-        )
-        moved += 1
 
-    return moved
+        if target is None:
+            target = LogCursor.objects.create(file_name=path.name)
+
+        if same_file:
+            LogCursor.objects.filter(pk=target.pk).update(
+                offset=source.offset,
+                # The rotated file's own inode, not the live one's. Under a
+                # rename they are the same; under copytruncate .1 is a copy
+                # with an inode of its own, and recording the live file's
+                # would make the very next read decide the file had been
+                # replaced and start it over.
+                inode=stat.st_ino,
+                head_digest=digest,
+            )
+            logger.info(
+                "%s was rotated to %s; resuming at %d rather than re-reading it",
+                source.file_name,
+                path.name,
+                source.offset,
+            )
+            followed += 1
+        else:
+            LogCursor.objects.filter(pk=target.pk).update(
+                offset=stat.st_size,
+                inode=stat.st_ino,
+                head_digest=digest,
+            )
+            logger.info(
+                "%s is not the file %s was being read from; skipping its %d bytes "
+                "rather than risk counting them twice",
+                path.name,
+                source.file_name,
+                stat.st_size,
+            )
+            skipped += 1
+
+    return {"rotations_followed": followed, "rotations_skipped": skipped}
 
 
 def ingest(*, directory: Path | None = None) -> dict:
@@ -291,7 +345,7 @@ def ingest(*, directory: Path | None = None) -> dict:
         "files": len(files),
         "lines": read,
         "unparsed": unparsed,
-        "rotations_followed": handovers,
+        **handovers,
         **written,
     }
 

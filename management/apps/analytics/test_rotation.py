@@ -180,6 +180,124 @@ class NothingIsCountedTwiceTests(RotatingTestCase):
         self.assertEqual(self.requests_counted(), 6)
 
 
+class ForeignRotationTests(RotatingTestCase):
+    """
+    A .1 that this app did not produce.
+
+    This gateway ran a host logrotate with copytruncate until rotation moved
+    into the application, and the .1 files it left are still on disk. Whether
+    one of them has already been counted depends on when it was made:
+
+      * just now -- the copy is byte-identical to what the cursor was
+        reading, so the fingerprint matches and resuming at the same offset
+        is exactly right
+      * yesterday -- the live file has been truncated and rewritten since,
+        the cursor has moved on, and nothing in the fingerprint relates the
+        two any more. Those lines were read through the live file before the
+        truncate, so reading them again would add a day of traffic that
+        already happened.
+
+    The second is the one on the server at the time rotation moved into the
+    application, and it is the one these pin.
+    """
+
+    def copytruncate(self, domain):
+        """logrotate's scheme: copy the whole file, then empty the original."""
+        live = self.directory / f"{domain}.access.log"
+        shutil.copy2(live, self.directory / f"{domain}.access.log.1")
+        live.write_text("")
+
+    def stale_rotation(self, domain, count):
+        """
+        A .1 left by yesterday's logrotate, unrelated to anything the cursor
+        is holding now.
+        """
+        path = self.directory / f"{domain}.access.log.1"
+        path.write_text(
+            "".join(line(ip="192.0.2.5") + "\n" for _ in range(count))
+        )
+        return path
+
+    def test_a_stale_rotation_is_skipped_rather_than_counted(self):
+        self.write("example.com", *[line(ip="198.51.100.1") for _ in range(10)])
+        ingest()
+        self.assertEqual(self.requests_counted(), 10)
+
+        self.stale_rotation("example.com", 7)
+
+        result = ingest()
+
+        self.assertEqual(result["rotations_skipped"], 1)
+        self.assertEqual(result["rotations_followed"], 0)
+        self.assertEqual(self.requests_counted(), 10)
+
+    def test_a_fresh_copytruncate_resumes_rather_than_re_reading(self):
+        """
+        The other shape of the same thing. The copy still carries the bytes
+        the cursor recorded, so it is recognisable — and resuming at the
+        offset reads nothing, which is correct.
+        """
+        self.write("example.com", *[line() for _ in range(10)])
+        ingest()
+
+        self.copytruncate("example.com")
+        self.write("example.com", line())
+
+        result = ingest()
+
+        self.assertEqual(result["rotations_followed"], 1)
+        self.assertEqual(self.requests_counted(), 11)
+
+    def test_history_on_a_fresh_install_is_read_rather_than_skipped(self):
+        """
+        Nothing has ever been read for this domain, so a .1 sitting there
+        cannot be duplicating anything and its lines are real traffic.
+        """
+        self.write("example.com", line(), line())
+        (self.directory / "example.com.access.log").rename(
+            self.directory / "example.com.access.log.1"
+        )
+        self.write("example.com", line())
+
+        result = ingest()
+
+        self.assertEqual(result["rotations_skipped"], 0)
+        self.assertEqual(self.requests_counted(), 3)
+
+    def test_a_skipped_file_is_not_reconsidered_every_pass(self):
+        self.write("example.com", *[line(ip="198.51.100.1") for _ in range(5)])
+        ingest()
+        self.stale_rotation("example.com", 4)
+
+        first = ingest()
+        second = ingest()
+        third = ingest()
+
+        self.assertEqual(first["rotations_skipped"], 1)
+        self.assertEqual(second["rotations_skipped"], 0)
+        self.assertEqual(third["rotations_skipped"], 0)
+        self.assertEqual(self.requests_counted(), 5)
+
+    def test_lines_appended_to_a_skipped_file_are_still_picked_up(self):
+        """
+        Skipping means "start at the end", not "ignore this file". Nothing
+        appends to a rotated log in practice, but the cursor should behave
+        like every other one.
+        """
+        self.write("example.com", *[line(ip="198.51.100.1") for _ in range(3)])
+        ingest()
+        self.stale_rotation("example.com", 2)
+        ingest()
+        self.assertEqual(self.requests_counted(), 3)
+
+        with (self.directory / "example.com.access.log.1").open("a") as handle:
+            handle.write(line(ip="198.51.100.9") + "\n")
+
+        ingest()
+
+        self.assertEqual(self.requests_counted(), 4)
+
+
 class DiscoveryTests(RotatingTestCase):
     def test_a_rotated_file_belongs_to_the_same_domain(self):
         self.assertEqual(

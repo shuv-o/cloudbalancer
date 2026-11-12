@@ -31,6 +31,7 @@ set -eu
 # than the one thing it costs us. See cache_purge_all().
 unwritable=""
 for directory in \
+    /app/staticfiles \
     /etc/nginx/conf.d \
     /etc/nginx/ssl \
     /etc/letsencrypt \

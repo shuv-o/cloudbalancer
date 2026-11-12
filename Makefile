@@ -170,11 +170,13 @@ lock: ## Regenerate requirements.lock after changing requirements.txt
 
 fix-permissions: ## Hand the volumes to the non-root management user (one-off, after upgrading)
 	@echo "Giving the management volumes to uid 10001. Safe to re-run."
+	@echo "/app/staticfiles is included: collectstatic writes it, and it lives"
+	@echo "inside the bind-mounted source tree rather than in a volume."
 	@echo "Not /var/cache/nginx: Nginx creates and writes that as its own user,"
 	@echo "so handing it over would stop the gateway caching."
 	@echo ""
 	docker compose -f docker-compose.yml -f deploy/fix-permissions.yml \
-		run --rm --no-deps django 'chown -Rc 10001:10001 /etc/nginx/conf.d /etc/nginx/ssl /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /var/www/acme /var/backups/cloudbalancer /var/run/cloudbalancer'
+		run --rm --no-deps django 'mkdir -p /app/staticfiles && chown -Rc 10001:10001 /app/staticfiles /etc/nginx/conf.d /etc/nginx/ssl /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /var/www/acme /var/backups/cloudbalancer /var/run/cloudbalancer'
 	@echo ""
 	@echo "Done. Now: docker compose up -d"
 

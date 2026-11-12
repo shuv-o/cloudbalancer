@@ -75,6 +75,7 @@ RUN groupadd --gid "${APP_GID}" cloudbalancer \
                 /var/lib/letsencrypt /var/log/letsencrypt /var/www/acme \
                 /var/cache/nginx /var/backups/cloudbalancer \
                 /var/lib/letsencrypt/dns-credentials \
+                /var/lib/cloudbalancer/geoip \
                 /var/run/cloudbalancer /app/staticfiles \
     # A named volume created fresh inherits the ownership of the image
     # directory behind it, so these chowns are what make a clean install work
@@ -83,7 +84,8 @@ RUN groupadd --gid "${APP_GID}" cloudbalancer \
     && chown -R "${APP_UID}:${APP_GID}" \
         /home/cloudbalancer /app /etc/nginx/conf.d /etc/nginx/ssl /etc/letsencrypt \
         /var/lib/letsencrypt /var/log/letsencrypt /var/www/acme \
-        /var/cache/nginx /var/backups/cloudbalancer /var/run/cloudbalancer
+        /var/cache/nginx /var/backups/cloudbalancer /var/run/cloudbalancer \
+        /var/lib/cloudbalancer
 
 USER cloudbalancer
 

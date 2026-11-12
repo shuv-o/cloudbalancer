@@ -77,6 +77,10 @@ LETSENCRYPT_DIR = _path("LETSENCRYPT_DIR", "letsencrypt")
 CERTBOT_WORK_DIR = _path("CERTBOT_WORK_DIR", "letsencrypt-work")
 CERTBOT_LOG_DIR = _path("CERTBOT_LOG_DIR", "letsencrypt-log")
 ACME_WEBROOT_DIR = _path("ACME_WEBROOT_DIR", "acme")
+NGINX_LOG_DIR = _path("NGINX_LOG_DIR", "nginx-logs")
+GEOIP_DIR = _path("GEOIP_DIR", "geoip")
+GEOIP_CITY_DB = str(Path(GEOIP_DIR) / "city.mmdb")
+GEOIP_ASN_DB = str(Path(GEOIP_DIR) / "asn.mmdb")
 DNS_CREDENTIALS_DIR = _path("DNS_CREDENTIALS_DIR", "dns-credentials")
 
 for _path in (

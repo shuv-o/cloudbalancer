@@ -120,6 +120,7 @@ INSTALLED_APPS = [
     "apps.gateway",
     "apps.backups",
     "apps.alerts",
+    "apps.analytics",
 ]
 
 # =============================================================================
@@ -251,7 +252,59 @@ CELERY_BEAT_SCHEDULE = {
         "task": "alerts.prune",
         "schedule": crontab(hour="4", minute="51"),
     },
+    # Often, because each pass only reads what is new and a long gap means a
+    # long catch-up. Five minutes keeps every pass small.
+    "ingest-access-logs": {
+        "task": "analytics.ingest",
+        "schedule": float(os.environ.get("ANALYTICS_INGEST_INTERVAL", 300)),
+    },
+    "prune-analytics": {
+        "task": "analytics.prune",
+        "schedule": crontab(hour="4", minute="37"),
+    },
 }
+
+# =============================================================================
+# Traffic analytics
+#
+# The traffic-status module cannot answer who, from where, or what -- it
+# aggregates per vhost and per upstream. Those facts exist only in the access
+# log, which 20-servers.conf.j2 already writes per domain.
+#
+# Nothing here stores a raw log line. Everything is a daily rollup, and the
+# table holding complete addresses is kept for far less time than the ones
+# that do not.
+# =============================================================================
+NGINX_LOG_DIR = os.environ.get("NGINX_LOG_DIR", "/var/log/nginx")
+ANALYTICS_INGEST_INTERVAL = int(os.environ.get("ANALYTICS_INGEST_INTERVAL", 300))
+# A ceiling per pass, so a backlog is worked through over several runs rather
+# than held in one worker's memory.
+ANALYTICS_MAX_LINES_PER_RUN = int(os.environ.get("ANALYTICS_MAX_LINES_PER_RUN", 200_000))
+
+# Complete IP addresses are personal data in most places this will run. Long
+# enough to investigate abuse, short enough not to be a standing record of
+# who visited what.
+ANALYTICS_CLIENT_RETENTION_DAYS = int(os.environ.get("ANALYTICS_CLIENT_RETENTION_DAYS", 30))
+ANALYTICS_PATH_RETENTION_DAYS = int(os.environ.get("ANALYTICS_PATH_RETENTION_DAYS", 90))
+# Country, network and hour-of-day carry no address and answer questions
+# about years, so they live as long as the metrics do.
+ANALYTICS_AGGREGATE_RETENTION_DAYS = int(
+    os.environ.get("ANALYTICS_AGGREGATE_RETENTION_DAYS", 400)
+)
+
+# MaxMind-format databases, fetched by `manage.py geoip_update`. Absent, every
+# lookup returns empty and the rest of the analytics works without geography.
+GEOIP_DIR = os.environ.get("GEOIP_DIR", "/var/lib/cloudbalancer/geoip")
+GEOIP_CITY_DB = os.environ.get("GEOIP_CITY_DB", f"{GEOIP_DIR}/city.mmdb")
+GEOIP_ASN_DB = os.environ.get("GEOIP_ASN_DB", f"{GEOIP_DIR}/asn.mmdb")
+# DB-IP's free databases need no account and are CC-BY, which requires the
+# attribution to be shown wherever the data is.
+GEOIP_PROVIDER = os.environ.get("GEOIP_PROVIDER", "dbip")
+GEOIP_ATTRIBUTION = os.environ.get(
+    "GEOIP_ATTRIBUTION", "IP geolocation by DB-IP (https://db-ip.com)"
+)
+MAXMIND_LICENSE_KEY = os.environ.get("MAXMIND_LICENSE_KEY", "")
+MAXMIND_ACCOUNT_ID = os.environ.get("MAXMIND_ACCOUNT_ID", "")
 
 # =============================================================================
 # Alerts

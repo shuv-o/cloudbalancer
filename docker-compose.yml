@@ -52,6 +52,14 @@ x-management: &management
     # in the Nginx container runs nginx -t or nginx -s reload and writes the
     # answer back. Two commands instead of the whole Docker API.
     - nginx_control:/var/run/cloudbalancer
+    # Read-only: the control plane reads these to build traffic analytics and
+    # has no business writing to them. Nginx's own counters cannot answer who
+    # a request came from or what it asked for; only the access log can.
+    - nginx_logs:/var/log/nginx:ro
+    # The geolocation databases, fetched by `manage.py geoip_update`. Not in
+    # the image: they are licensed, they go stale monthly, and a copy baked in
+    # is wrong within weeks.
+    - geoip:/var/lib/cloudbalancer/geoip
   # Runs as a normal user. Nothing in the management plane needs root: it
   # renders templates, talks to Postgres and certbot, and writes to volumes
   # this compose file gives it.
@@ -440,6 +448,7 @@ services:
 
 volumes:
   alertmanager_data:
+  geoip:
   backups:
   nginx_control:
   postgres_data:

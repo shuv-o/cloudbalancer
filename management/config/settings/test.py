@@ -85,3 +85,8 @@ for _path in (
     Path(_path).mkdir(parents=True, exist_ok=True)
 
 GATEWAY_DEPLOY_DEBOUNCE_SECONDS = 0
+
+# Backups write real archives during tests, so they go to the scratch
+# directory everything else does rather than to /var/backups.
+BACKUP_DIR = os.environ.get("BACKUP_DIR", str(_TMP / "backups"))
+Path(BACKUP_DIR).mkdir(parents=True, exist_ok=True)

@@ -43,6 +43,11 @@ x-management: &management
     - letsencrypt_log:/var/log/letsencrypt
     - nginx_cache:/var/cache/nginx
     - ssl_certs:/etc/nginx/ssl
+    # Named by default so a backup survives `docker compose down -v`'s
+    # siblings, but meant to be pointed at a real path on the host: a backup
+    # on the same disk as the database protects against mistakes, not against
+    # the disk. BACKUP_HOST_DIR in .env overrides it.
+    - ${BACKUP_HOST_DIR:-backups}:/var/backups/cloudbalancer
     - /var/run/docker.sock:/var/run/docker.sock
   restart: unless-stopped
   networks: [gateway]
@@ -315,6 +320,7 @@ services:
     networks: [gateway]
 
 volumes:
+  backups:
   postgres_data:
   redis_data:
   nginx_cache:

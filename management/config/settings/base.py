@@ -118,6 +118,7 @@ INSTALLED_APPS = [
     "apps.certificates",
     "apps.monitoring",
     "apps.gateway",
+    "apps.backups",
 ]
 
 # =============================================================================
@@ -230,7 +231,32 @@ CELERY_BEAT_SCHEDULE = {
         "task": "security.prune_history",
         "schedule": crontab(hour="4", minute="23"),
     },
+    # Early, and before the security prune, so a backup exists from before
+    # anything was trimmed. Verification runs inside this task rather than on
+    # its own schedule: a verification pass that lags by a day reports on
+    # yesterday's archive and says nothing about today's.
+    "nightly-backup": {
+        "task": "backups.run_scheduled",
+        "schedule": crontab(hour="2", minute="41"),
+    },
 }
+
+# =============================================================================
+# Backups
+#
+# The archive holds the database, every certificate and its private key, and
+# the generated configuration. Without an encryption key it is a plaintext
+# copy of every secret the gateway serves, which matters the moment it is
+# copied anywhere else.
+# =============================================================================
+BACKUP_DIR = os.environ.get("BACKUP_DIR", "/var/backups/cloudbalancer")
+BACKUP_TIMEOUT = int(os.environ.get("BACKUP_TIMEOUT", 900))
+BACKUP_KEEP_DAYS = int(os.environ.get("BACKUP_KEEP_DAYS", 14))
+BACKUP_KEEP_WEEKS = int(os.environ.get("BACKUP_KEEP_WEEKS", 12))
+# How old the newest *verified* backup may be before the panel says so.
+BACKUP_STALE_HOURS = int(os.environ.get("BACKUP_STALE_HOURS", 36))
+# 64 hex characters. `openssl rand -hex 32`. Empty means no encryption.
+BACKUP_ENCRYPTION_KEY = os.environ.get("BACKUP_ENCRYPTION_KEY", "")
 
 # How long the security tables keep their rows. Sign-in attempts answer "is
 # someone trying right now"; the audit trail answers "who changed this", which

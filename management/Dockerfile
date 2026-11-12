@@ -12,6 +12,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 ARG DOCKER_CLI_VERSION=27.5.1
+# Must match the PostgreSQL major version in docker-compose.yml. pg_dump
+# refuses to dump a server newer than itself, and the failure surfaces as a
+# backup that has been quietly failing for however long nobody checked.
+ARG POSTGRES_MAJOR=16
 
 WORKDIR /app
 
@@ -19,11 +23,19 @@ WORKDIR /app
 # `docker exec nginx nginx -s reload`, so pulling in a whole daemon would be
 # several hundred megabytes for one command.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        gcc libpq-dev curl ca-certificates \
+        gcc libpq-dev curl ca-certificates gnupg \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+        https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+https://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo $VERSION_CODENAME)-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends "postgresql-client-${POSTGRES_MAJOR}" \
     && ARCH="$(uname -m)" \
     && curl -fsSL "https://download.docker.com/linux/static/stable/${ARCH}/docker-${DOCKER_CLI_VERSION}.tgz" \
         | tar -xz --strip-components=1 -C /usr/local/bin docker/docker \
-    && apt-get purge -y --auto-remove curl \
+    && apt-get purge -y --auto-remove curl gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

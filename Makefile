@@ -6,7 +6,7 @@
     update-cached release rollback deploy config check reload cache-purge \
     certs renew test test-local bench-up bench bench-log panel-build \
     panel-dev panel-ca panel-cert panel-revoke panel-status \
-    bench-protection
+    bench-protection backup backup-list restore backup-key
 .DEFAULT_GOAL := help
 
 help: ## Show this help
@@ -154,6 +154,22 @@ renew: ## Renew every certificate inside its renewal window
 # ---------------------------------------------------------------------------
 # Tests and benchmarks
 # ---------------------------------------------------------------------------
+
+backup: ## Take a backup now, verify it restores, and prune old ones
+	docker compose exec django python manage.py backup
+
+backup-list: ## List the backups that exist and whether each is verified
+	docker compose exec django python manage.py restore --list
+
+restore: ## Unpack a backup and print the steps to restore from it
+	docker compose exec django python manage.py restore $(ARCHIVE)
+
+backup-key: ## Generate a backup encryption key to put in .env
+	@echo "BACKUP_ENCRYPTION_KEY=$$(openssl rand -hex 32)"
+	@echo ""
+	@echo "Store this somewhere other than this host. Without it every"
+	@echo "encrypted archive is unreadable, including the ones you need"
+	@echo "when this host is the thing that failed."
 
 test: ## Run the test suite
 	docker compose exec django python manage.py test

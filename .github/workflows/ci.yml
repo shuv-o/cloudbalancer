@@ -150,19 +150,69 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: The lock still matches requirements.txt
+      - name: Tools
+        run: pip install packaging pyyaml
+
+      - name: The lock covers everything requirements.txt asks for
         working-directory: management
         run: |
-          pip install pip-tools
-          cp requirements.lock requirements.lock.committed
-          pip-compile --quiet --generate-hashes \
-            --output-file=requirements.lock requirements.txt
-          if ! diff -q requirements.lock.committed requirements.lock >/dev/null; then
-            echo "::error::requirements.txt changed without regenerating the lock. Run: make lock"
-            diff requirements.lock.committed requirements.lock | head -40
-            exit 1
-          fi
-          echo "Lock is current."
+          python - <<'PY'
+          import re, sys
+          from packaging.requirements import Requirement
+          from packaging.version import Version
+
+          # Deliberately not a re-resolution.
+          #
+          # The first version of this check ran pip-compile and diffed the
+          # result against the committed lock. That fails whenever anything
+          # upstream publishes a release -- the resolver picks the new version,
+          # the diff is non-empty, and CI blocks a pull request that touched
+          # none of it. A gate that fails for reasons outside the repository
+          # gets switched off.
+          #
+          # What actually goes wrong is someone adding a dependency and not
+          # regenerating. That is what this looks for, offline and
+          # deterministically: every requirement named must be pinned in the
+          # lock, at a version its specifier allows.
+          pinned = {}
+          for line in open("requirements.lock"):
+              match = re.match(r"^([A-Za-z0-9._-]+)==([^\s\\;]+)", line)
+              if match:
+                  pinned[match.group(1).lower().replace("_", "-")] = match.group(2)
+
+          problems = []
+          declared = 0
+          for raw in open("requirements.txt"):
+              raw = raw.split("#")[0].strip()
+              if not raw or raw.startswith("-"):
+                  continue
+              try:
+                  requirement = Requirement(raw)
+              except Exception:
+                  problems.append(f"could not parse '{raw}' in requirements.txt")
+                  continue
+
+              declared += 1
+              name = requirement.name.lower().replace("_", "-")
+              if name not in pinned:
+                  problems.append(
+                      f"{requirement.name} is required but is not in the lock"
+                  )
+                  continue
+              if not requirement.specifier.contains(Version(pinned[name]), prereleases=True):
+                  problems.append(
+                      f"{requirement.name} is pinned at {pinned[name]}, which "
+                      f"'{requirement.specifier}' does not allow"
+                  )
+
+          for problem in problems:
+              print(f"::error::{problem}")
+          if problems:
+              print("::error::Run `make lock` and commit the result.")
+              sys.exit(1)
+
+          print(f"{declared} declared requirements, all pinned in a lock of {len(pinned)}.")
+          PY
 
       - name: Known vulnerabilities in the locked dependencies
         working-directory: management
@@ -173,6 +223,8 @@ jobs:
           # that blocks the wrong thing gets switched off.
           pip-audit --requirement requirements.lock --disable-pip || true
 
+      - uses: docker/setup-buildx-action@v3
+
       - name: Build the management image
         uses: docker/build-push-action@v6
         with:
@@ -182,7 +234,10 @@ jobs:
           tags: cloudbalancer-management:scan
 
       - name: Scan it
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pinned to a commit rather than a tag. A tag can be moved to point at
+        # different code, which in a job about supply chain would be an odd
+        # thing to leave open.
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8  # v0.36.0
         with:
           image-ref: cloudbalancer-management:scan
           format: table

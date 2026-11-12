@@ -139,7 +139,7 @@ class CursorTests(TestCase):
 
     def test_it_reads_everything_the_first_time(self):
         self.write(line(), line())
-        lines, offset, inode = read_new_lines(self.log, offset=0, inode=None)
+        lines, offset, inode, digest = read_new_lines(self.log, offset=0, inode=None)
 
         self.assertEqual(len(lines), 2)
         self.assertEqual(offset, self.log.stat().st_size)
@@ -147,10 +147,10 @@ class CursorTests(TestCase):
     def test_it_reads_only_what_is_new(self):
         """The whole point. Re-reading doubles every count already recorded."""
         self.write(line())
-        _, offset, inode = read_new_lines(self.log, offset=0, inode=None)
+        _, offset, inode, digest = read_new_lines(self.log, offset=0, inode=None)
 
         self.write(line(), line())
-        lines, _, _ = read_new_lines(self.log, offset=offset, inode=inode)
+        lines, _, _, _ = read_new_lines(self.log, offset=offset, inode=inode)
 
         self.assertEqual(len(lines), 2)
 
@@ -163,7 +163,7 @@ class CursorTests(TestCase):
         with self.log.open("a") as handle:
             handle.write("203.0.113.9 - - [12/Nov/2026:10:16:00 +0000] \"GET /part")
 
-        lines, offset, _ = read_new_lines(self.log, offset=0, inode=None)
+        lines, offset, _, _ = read_new_lines(self.log, offset=0, inode=None)
 
         self.assertEqual(len(lines), 1)
         self.assertLess(offset, self.log.stat().st_size)
@@ -172,7 +172,7 @@ class CursorTests(TestCase):
         with self.log.open("a") as handle:
             handle.write(' HTTP/1.1" 200 10 "-" "x" rid=a cache=- rt=0.1 '
                          "uct=0.1 uht=0.1 urt=0.1 upstream=-\n")
-        more, _, _ = read_new_lines(self.log, offset=offset, inode=None)
+        more, _, _, _ = read_new_lines(self.log, offset=offset, inode=None)
         self.assertEqual(len(more), 1)
 
     def test_a_rotated_file_is_read_from_the_start(self):
@@ -180,33 +180,59 @@ class CursorTests(TestCase):
         A rotated log is a different file wearing the same name. Resuming at
         the old offset skips its beginning -- silently, and in proportion to
         how busy the gateway was.
+
+        This deliberately does not assert that the inode changed. The first
+        version did, and CI's filesystem handed the replacement the same
+        inode, which is permitted and which the first implementation could
+        not survive: the new file was longer than the old offset, so nothing
+        looked wrong and the beginning was skipped. What matters is that the
+        whole of the new file is read, however the filesystem numbered it.
         """
         self.write(line())
-        _, offset, inode = read_new_lines(self.log, offset=0, inode=None)
+        _, offset, inode, digest = read_new_lines(self.log, offset=0, inode=None)
 
         self.log.unlink()
-        self.write(line(), line(), line())
-        new_inode = self.log.stat().st_ino
-        self.assertNotEqual(new_inode, inode)
+        self.write(line(ip="198.51.100.1"), line(), line())
 
-        lines, _, _ = read_new_lines(self.log, offset=offset, inode=inode)
+        lines, _, _, _ = read_new_lines(
+            self.log, offset=offset, inode=inode, digest=digest
+        )
+        self.assertEqual(len(lines), 3)
+
+    def test_a_replacement_that_reuses_the_inode_is_still_noticed(self):
+        """
+        The case the inode check alone cannot see, forced rather than hoped
+        for: same inode, and a new file longer than the old offset.
+        """
+        self.write(line())
+        _, offset, inode, digest = read_new_lines(self.log, offset=0, inode=None)
+
+        self.log.write_text("")
+        self.write(line(ip="198.51.100.9"), line(), line())
+
+        lines, _, _, _ = read_new_lines(
+            self.log,
+            offset=offset,
+            inode=self.log.stat().st_ino,  # pretend it did not change
+            digest=digest,
+        )
         self.assertEqual(len(lines), 3)
 
     def test_a_truncated_file_is_read_from_the_start(self):
         """copytruncate rotation leaves the same inode and a shorter file."""
         self.write(line(), line(), line())
-        _, offset, inode = read_new_lines(self.log, offset=0, inode=None)
+        _, offset, inode, digest = read_new_lines(self.log, offset=0, inode=None)
 
         self.log.write_text("")
         self.write(line())
 
-        lines, _, _ = read_new_lines(self.log, offset=offset, inode=inode)
+        lines, _, _, _ = read_new_lines(self.log, offset=offset, inode=inode)
         self.assertEqual(len(lines), 1)
 
     def test_nothing_new_reads_nothing(self):
         self.write(line())
-        _, offset, inode = read_new_lines(self.log, offset=0, inode=None)
-        lines, same, _ = read_new_lines(self.log, offset=offset, inode=inode)
+        _, offset, inode, digest = read_new_lines(self.log, offset=0, inode=None)
+        lines, same, _, _ = read_new_lines(self.log, offset=offset, inode=inode)
 
         self.assertEqual(lines, [])
         self.assertEqual(same, offset)

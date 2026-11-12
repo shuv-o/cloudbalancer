@@ -32,9 +32,12 @@ class LogCursor(models.Model):
     """
 
     file_name = models.CharField(max_length=255, unique=True)
-    # A rotated file is a different file with the same name; the inode is how
-    # that is noticed before the old offset skips past its beginning.
+    # Three ways to notice the file is not the one the offset refers to.
+    # The inode is the obvious one and is not sufficient on its own: a
+    # filesystem may hand the same inode to the next file created, and some
+    # do. The fingerprint of the first bytes catches that case.
     inode = models.BigIntegerField(default=0)
+    head_digest = models.CharField(max_length=32, blank=True, default="")
     offset = models.BigIntegerField(default=0)
 
     lines_read = models.BigIntegerField(default=0)

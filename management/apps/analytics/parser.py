@@ -16,6 +16,7 @@ And a cursor per file means each run reads only what is new. An aggregation
 pass that re-read from the beginning would double every count it had already
 recorded, which is the kind of error that looks like traffic growth.
 """
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
@@ -159,27 +160,60 @@ def log_files(directory: Path) -> list[Path]:
     )
 
 
-def read_new_lines(path: Path, *, offset: int, inode: int | None) -> tuple[list[str], int, int]:
+HEAD_BYTES = 256
+
+
+def head_digest(path: Path) -> str:
+    """
+    A fingerprint of the first bytes of a file.
+
+    Used to notice that a log has been replaced. The inode alone is not
+    enough: a filesystem is free to hand the same inode to the next file
+    created, and GitHub's runners do. When that happens to a log rotated
+    while the gateway is busy, the new file is longer than the old offset,
+    nothing looks wrong, and everything before that offset is skipped.
+
+    The first line of an access log is a request with a timestamp, so two
+    different files sharing these bytes is not a case worth designing for.
+    """
+    try:
+        with path.open("rb") as handle:
+            return hashlib.sha256(handle.read(HEAD_BYTES)).hexdigest()[:32]
+    except OSError:
+        return ""
+
+
+def read_new_lines(
+    path: Path, *, offset: int, inode: int | None, digest: str = ""
+) -> tuple[list[str], int, int, str]:
     """
     The lines added since `offset`, and where to resume next time.
 
-    Returns (lines, new_offset, inode).
+    Returns (lines, new_offset, inode, head_digest).
 
-    The inode is checked because a rotated log is a different file wearing the
-    same name. Resuming at the old offset would then skip the beginning of the
-    new file -- silently, and in proportion to how busy the gateway was. When
-    the inode changes, or the file is shorter than the offset, reading starts
-    again from zero.
+    Three things mean the file is not the one the offset refers to, and any
+    of them restarts the read:
+
+      * the first bytes changed -- it was replaced
+      * the inode changed -- it was replaced, on a filesystem that says so
+      * it is shorter than the offset -- it was truncated in place
+
+    Resuming at a stale offset skips the beginning of the new file silently,
+    and in proportion to how busy the gateway was.
     """
     try:
         stat = path.stat()
     except OSError:
-        return [], offset, inode or 0
+        return [], offset, inode or 0, digest
 
     current_inode = stat.st_ino
+    current_digest = head_digest(path)
     start = offset
 
-    if inode is not None and current_inode != inode:
+    if digest and current_digest and current_digest != digest:
+        logger.info("%s was replaced; reading it from the start", path.name)
+        start = 0
+    elif inode is not None and current_inode != inode:
         logger.info("%s was rotated; reading it from the start", path.name)
         start = 0
     elif stat.st_size < offset:
@@ -187,7 +221,7 @@ def read_new_lines(path: Path, *, offset: int, inode: int | None) -> tuple[list[
         start = 0
 
     if stat.st_size == start:
-        return [], start, current_inode
+        return [], start, current_inode, current_digest
 
     with path.open("r", errors="replace") as handle:
         handle.seek(start)
@@ -198,7 +232,12 @@ def read_new_lines(path: Path, *, offset: int, inode: int | None) -> tuple[list[
         # next time.
         cut = body.rfind("\n")
         if cut == -1:
-            return [], start, current_inode
+            return [], start, current_inode, current_digest
 
         consumed = body[: cut + 1]
-        return consumed.splitlines(), start + len(consumed.encode()), current_inode
+        return (
+            consumed.splitlines(),
+            start + len(consumed.encode()),
+            current_inode,
+            current_digest,
+        )

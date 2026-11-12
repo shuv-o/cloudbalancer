@@ -163,8 +163,11 @@ def ingest(*, directory: Path | None = None) -> dict:
 
     for path in files:
         cursor, _ = LogCursor.objects.get_or_create(file_name=path.name)
-        lines, offset, inode = read_new_lines(
-            path, offset=cursor.offset, inode=cursor.inode or None
+        lines, offset, inode, digest = read_new_lines(
+            path,
+            offset=cursor.offset,
+            inode=cursor.inode or None,
+            digest=cursor.head_digest,
         )
 
         if budget and len(lines) > budget - read:
@@ -186,6 +189,7 @@ def ingest(*, directory: Path | None = None) -> dict:
         LogCursor.objects.filter(pk=cursor.pk).update(
             offset=offset,
             inode=inode,
+            head_digest=digest,
             lines_read=F("lines_read") + len(lines),
             lines_unparsed=F("lines_unparsed") + unparsed,
             last_read_at=timezone.now(),

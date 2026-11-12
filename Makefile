@@ -6,7 +6,8 @@
     update-cached release rollback deploy config check reload cache-purge \
     certs renew test test-local bench-up bench bench-log panel-build \
     panel-dev panel-ca panel-cert panel-revoke panel-status \
-    bench-protection backup backup-list restore backup-key
+    bench-protection backup backup-list restore backup-key fix-permissions \
+    lock
 .DEFAULT_GOAL := help
 
 help: ## Show this help
@@ -154,6 +155,29 @@ renew: ## Renew every certificate inside its renewal window
 # ---------------------------------------------------------------------------
 # Tests and benchmarks
 # ---------------------------------------------------------------------------
+
+lock: ## Regenerate requirements.lock after changing requirements.txt
+	@command -v python3.12 >/dev/null || { \
+		echo "python3.12 is needed: the image runs it, and a lock resolved"; \
+		echo "on another version can pick packages 3.12 cannot install."; \
+		exit 1; }
+	cd management && python3.12 -m venv .lockenv \
+		&& .lockenv/bin/pip install -q pip-tools \
+		&& .lockenv/bin/pip-compile --generate-hashes \
+			--output-file=requirements.lock requirements.txt \
+		&& rm -rf .lockenv
+	@echo "Rebuild the image for this to take effect: make build"
+
+fix-permissions: ## Hand the volumes to the non-root management user (one-off, after upgrading)
+	@echo "Giving the management volumes to uid 10001."
+	@echo "Safe to re-run, and a no-op on a clean install."
+	docker compose run --rm --no-deps --user 0:0 --entrypoint sh django -c '\
+		chown -R 10001:10001 \
+			/etc/nginx/conf.d /etc/nginx/ssl /etc/letsencrypt \
+			/var/lib/letsencrypt /var/log/letsencrypt /var/www/acme \
+			/var/cache/nginx /var/backups/cloudbalancer /var/run/cloudbalancer \
+		2>/dev/null || true'
+	@echo "Done. Now: make up"
 
 backup: ## Take a backup now, verify it restores, and prune old ones
 	docker compose exec django python manage.py backup

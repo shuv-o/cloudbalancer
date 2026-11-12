@@ -14,6 +14,53 @@
 # =============================================================================
 set -eu
 
+# -----------------------------------------------------------------------------
+# Writability, checked before anything else.
+#
+# This container stopped running as root. A volume created before that change
+# is still owned by root, and the failure shows up far from its cause: certbot
+# reporting a permission error on renewal weeks later, or a deploy writing a
+# config it cannot replace. None of those name the actual problem.
+#
+# So it is named here, once, with the command that fixes it.
+# -----------------------------------------------------------------------------
+unwritable=""
+for directory in \
+    /etc/nginx/conf.d \
+    /etc/nginx/ssl \
+    /etc/letsencrypt \
+    /var/www/acme \
+    /var/cache/nginx \
+    /var/backups/cloudbalancer \
+    /var/run/cloudbalancer
+do
+    [ -d "$directory" ] || continue
+    if ! touch "$directory/.writable-probe" 2>/dev/null; then
+        unwritable="$unwritable $directory"
+    else
+        rm -f "$directory/.writable-probe"
+    fi
+done
+
+if [ -n "$unwritable" ]; then
+    echo "ERROR: this container runs as uid $(id -u) and cannot write to:" >&2
+    for directory in $unwritable; do
+        echo "         $directory" >&2
+    done
+    cat >&2 <<'MESSAGE'
+
+These volumes were created while the management plane ran as root. Nothing is
+broken; they just need to belong to the user that now writes to them. On the
+host, once:
+
+    make fix-permissions
+
+Then start again. A clean install never sees this: a volume created fresh
+inherits ownership from the image, which already has it right.
+MESSAGE
+    exit 1
+fi
+
 echo "==> Applying migrations"
 python manage.py migrate --noinput
 

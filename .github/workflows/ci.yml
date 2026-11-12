@@ -29,13 +29,16 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-          cache-dependency-path: management/requirements.txt
+          cache-dependency-path: management/requirements.lock
 
       - name: Install dependencies
         working-directory: management
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          # The lock, with hashes, exactly as the image does. Testing against
+          # resolved-today versions while shipping pinned ones means the suite
+          # is not testing what gets deployed.
+          pip install --require-hashes -r requirements.lock
 
       - name: Every runtime import resolves in a clean environment
         run: |
@@ -129,6 +132,91 @@ jobs:
   # awkward topology and hands the files to the real image, with the traffic
   # module compiled in -- the only place that check can happen.
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Supply chain
+  #
+  # Two questions: does the lock still describe requirements.txt, and do the
+  # images ship a known-vulnerable package. Both are things that become true
+  # without anybody changing anything, which is why they are checked on every
+  # run rather than when someone remembers.
+  # ---------------------------------------------------------------------------
+  supply-chain:
+    name: Supply chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: The lock still matches requirements.txt
+        working-directory: management
+        run: |
+          pip install pip-tools
+          cp requirements.lock requirements.lock.committed
+          pip-compile --quiet --generate-hashes \
+            --output-file=requirements.lock requirements.txt
+          if ! diff -q requirements.lock.committed requirements.lock >/dev/null; then
+            echo "::error::requirements.txt changed without regenerating the lock. Run: make lock"
+            diff requirements.lock.committed requirements.lock | head -40
+            exit 1
+          fi
+          echo "Lock is current."
+
+      - name: Known vulnerabilities in the locked dependencies
+        working-directory: management
+        run: |
+          pip install pip-audit
+          # Reports, does not fail. A CVE published overnight in a transitive
+          # dependency would otherwise block an unrelated deploy, and a gate
+          # that blocks the wrong thing gets switched off.
+          pip-audit --requirement requirements.lock --disable-pip || true
+
+      - name: Build the management image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./management
+          push: false
+          load: true
+          tags: cloudbalancer-management:scan
+
+      - name: Scan it
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: cloudbalancer-management:scan
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+
+      - name: The management image runs as a normal user and has no Docker CLI
+        run: |
+          user=$(docker image inspect cloudbalancer-management:scan \
+            --format '{{.Config.User}}')
+          if [ -z "$user" ] || [ "$user" = "root" ]; then
+            echo "::error::the management image runs as root"
+            exit 1
+          fi
+          echo "Runs as: $user"
+
+          if docker run --rm --entrypoint sh cloudbalancer-management:scan \
+               -c 'command -v docker' >/dev/null 2>&1; then
+            echo "::error::the Docker CLI is back in the management image."
+            echo "Its only use was reaching Nginx, which the control directory replaced."
+            exit 1
+          fi
+          echo "No Docker CLI."
+
+      - name: Nothing mounts the Docker socket
+        run: |
+          if grep -n 'docker\.sock' docker-compose.yml; then
+            echo "::error::a service mounts /var/run/docker.sock."
+            echo "That is the unauthenticated Docker API, and therefore root on the host."
+            exit 1
+          fi
+          echo "No Docker socket mounts."
+
   gateway-config:
     name: Nginx accepts the generated config
     runs-on: ubuntu-latest
@@ -139,11 +227,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-          cache-dependency-path: management/requirements.txt
+          cache-dependency-path: management/requirements.lock
 
       - name: Install dependencies
         working-directory: management
-        run: pip install -r requirements.txt
+        run: pip install --require-hashes -r requirements.lock
 
       # The default docker driver cannot export a build cache. Without this
       # the build fails on cache-to rather than on anything to do with the

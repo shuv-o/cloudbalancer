@@ -86,6 +86,13 @@ for _path in (
 
 GATEWAY_DEPLOY_DEBOUNCE_SECONDS = 0
 
+# No Nginx container in the suite, and no watcher to answer. Pointing this
+# at a directory that does not exist makes the control-directory path
+# return None and the direct call take over, which is what a deployment
+# outside Compose does too.
+NGINX_CONTROL_DIR = os.environ.get("NGINX_CONTROL_DIR", str(_TMP / "no-control"))
+NGINX_CONTROL_TIMEOUT = 2
+
 # Backups write real archives during tests, so they go to the scratch
 # directory everything else does rather than to /var/backups.
 BACKUP_DIR = os.environ.get("BACKUP_DIR", str(_TMP / "backups"))

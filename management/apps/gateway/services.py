@@ -18,6 +18,8 @@ import hashlib
 import logging
 import shutil
 import subprocess
+import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -494,36 +496,85 @@ def config_restore(backup_path: Path) -> None:
 # Nginx control
 # ---------------------------------------------------------------------------
 
-def _nginx_exec(args: list[str], *, timeout: int = 15) -> tuple[bool, str]:
+def _nginx_via_control_dir(command: str, *, timeout: int) -> tuple[bool, str] | None:
     """
-    Run an Nginx command, in its container if we are not inside it.
+    Ask the watcher in the Nginx container to run one of two fixed commands.
 
-    Falls back to a direct call so the same code works when the gateway runs
-    on the host rather than under Compose.
+    Returns None when there is no control directory, so the caller can fall
+    back to running Nginx directly -- which is what happens outside Compose,
+    and in tests.
+
+    This replaced `docker exec`, which required mounting /var/run/docker.sock
+    into the management container. That socket is the Docker API with no
+    authorisation in front of it: anything able to write to it can start a
+    container with the host's root filesystem mounted. The panel needed
+    exactly two commands, so it now has exactly two commands instead of a
+    general-purpose way to run anything as root on the host.
     """
-    container = settings.NGINX_CONTAINER_NAME
-    attempts = [
-        ["docker", "exec", container, *args],
-        args,
-    ]
+    control = Path(settings.NGINX_CONTROL_DIR)
+    requests = control / "requests"
+    results = control / "results"
 
-    last_output = ""
-    for attempt in attempts:
-        try:
-            result = subprocess.run(attempt, capture_output=True, text=True, timeout=timeout)
-        except FileNotFoundError:
-            last_output = f"{attempt[0]} not found"
-            continue
-        except subprocess.TimeoutExpired:
-            return False, f"{' '.join(args)} timed out after {timeout}s"
-        return result.returncode == 0, (result.stdout + result.stderr).strip()
+    if not control.is_dir():
+        return None
 
-    return False, last_output or "no way to reach Nginx"
+    request_id = f"{uuid.uuid4().hex}"
+    try:
+        requests.mkdir(parents=True, exist_ok=True)
+        results.mkdir(parents=True, exist_ok=True)
+
+        # Written beside and renamed in: the watcher polls this directory, and
+        # must never read a request that is still being written.
+        partial = requests / f".{request_id}.partial"
+        partial.write_text(command)
+        partial.rename(requests / request_id)
+    except OSError as exc:
+        logger.warning("Could not write an Nginx control request: %s", exc)
+        return None
+
+    answer = results / request_id
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if answer.exists():
+            try:
+                body = answer.read_text()
+            except OSError:
+                time.sleep(0.05)
+                continue
+            finally:
+                answer.unlink(missing_ok=True)
+
+            code, _, output = body.partition("\n")
+            return code.strip() == "0", output.strip()
+        time.sleep(0.1)
+
+    # Leave the request in place. The watcher may still be working, and the
+    # alternative -- cleaning up and falling through to a direct call -- would
+    # run the same command twice.
+    return False, (
+        f"Nginx did not answer '{command}' within {timeout}s. The container "
+        "may be stopped, or its reload watcher may not be running."
+    )
+
+
+def _nginx_direct(args: list[str], *, timeout: int) -> tuple[bool, str]:
+    """Run Nginx here, for a deployment that is not split across containers."""
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        return False, "nginx is not installed here and no control directory exists"
+    except subprocess.TimeoutExpired:
+        return False, f"{' '.join(args)} timed out after {timeout}s"
+    return result.returncode == 0, (result.stdout + result.stderr).strip()
 
 
 def nginx_test() -> NginxTestResult:
     """Check the configuration before Nginx is asked to load it."""
-    success, output = _nginx_exec(["nginx", "-t"])
+    answer = _nginx_via_control_dir("test", timeout=settings.NGINX_CONTROL_TIMEOUT)
+    if answer is None:
+        answer = _nginx_direct(["nginx", "-t"], timeout=settings.NGINX_CONTROL_TIMEOUT)
+
+    success, output = answer
     logger.info("nginx -t: %s", "ok" if success else "failed")
     return NginxTestResult(success=success, output=output)
 
@@ -535,8 +586,18 @@ def nginx_reload() -> NginxTestResult:
     Not free. Fresh workers start with empty upstream keepalive pools, so a
     reload costs a short burst of TCP handshakes. That is why deploys are
     coalesced rather than run per edit.
+
+    The watcher runs `nginx -t` before signalling. `nginx -s reload` on a
+    broken configuration leaves the running workers untouched and reports
+    success from having sent the signal, so without that check a bad deploy
+    looks like a good one until something restarts Nginx -- possibly months
+    later, unattended.
     """
-    success, output = _nginx_exec(["nginx", "-s", "reload"])
+    answer = _nginx_via_control_dir("reload", timeout=settings.NGINX_CONTROL_TIMEOUT)
+    if answer is None:
+        answer = _nginx_direct(["nginx", "-s", "reload"], timeout=settings.NGINX_CONTROL_TIMEOUT)
+
+    success, output = answer
     logger.info("nginx reload: %s", "ok" if success else "failed")
     return NginxTestResult(success=success, output=output)
 

@@ -40,7 +40,17 @@ COPY --from=builder \
 
 # Directories shared with the management container: the ACME challenge webroot,
 # the cache the control panel purges from, and certbot's output.
-RUN mkdir -p /var/www/acme /var/cache/nginx /etc/nginx/ssl /etc/letsencrypt \
+# Answers `nginx -t` and `nginx -s reload` for the control plane, so that the
+# management container does not need the Docker socket to reach Nginx. See the
+# script for why that mattered.
+COPY reload-watcher.sh /usr/local/bin/cloudbalancer-reload-watcher.sh
+COPY docker-entrypoint.d/40-cloudbalancer-reload-watcher.sh \
+     /docker-entrypoint.d/40-cloudbalancer-reload-watcher.sh
+
+RUN chmod +x /usr/local/bin/cloudbalancer-reload-watcher.sh \
+             /docker-entrypoint.d/40-cloudbalancer-reload-watcher.sh \
+    && mkdir -p /var/www/acme /var/cache/nginx /etc/nginx/ssl /etc/letsencrypt \
+                /var/run/cloudbalancer/requests /var/run/cloudbalancer/results \
     && chown -R nginx:nginx /var/www/acme /var/cache/nginx
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \

@@ -33,3 +33,4 @@ benchmarks/results/*
 .idea/
 .vscode/
 tsconfig.tsbuildinfo
+management/.lockenv/

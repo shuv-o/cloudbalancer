@@ -397,7 +397,13 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # Gateway — where the control plane writes, and how it reaches Nginx
 # =============================================================================
 NGINX_CONF_DIR = os.environ.get("NGINX_CONF_DIR", "/etc/nginx/conf.d")
-NGINX_CONTAINER_NAME = os.environ.get("NGINX_CONTAINER_NAME", "cloudbalancer-nginx")
+# A directory shared with the Nginx container, where the control plane asks
+# for `nginx -t` and `nginx -s reload` and a watcher there answers. This
+# replaced mounting /var/run/docker.sock into the management container, which
+# gave the panel the unauthenticated Docker API -- and therefore root on the
+# host -- in order to send two signals.
+NGINX_CONTROL_DIR = os.environ.get("NGINX_CONTROL_DIR", "/var/run/cloudbalancer")
+NGINX_CONTROL_TIMEOUT = int(os.environ.get("NGINX_CONTROL_TIMEOUT", 30))
 NGINX_SSL_DIR = os.environ.get("NGINX_SSL_DIR", "/etc/nginx/ssl")
 NGINX_CACHE_DIR = os.environ.get("NGINX_CACHE_DIR", "/var/cache/nginx")
 

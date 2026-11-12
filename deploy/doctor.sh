@@ -120,6 +120,40 @@ check_surface nginx      8081 "control panel"
 check_surface grafana    3000 "Grafana"
 check_surface prometheus 9090 "Prometheus"
 
+# ---------------------------------------------------------------------------
+# Container posture
+#
+# These used to be invisible. The management containers mounted the Docker
+# socket, which is the Docker API with no authorisation in front of it: a
+# compromise anywhere in the panel was root on this host rather than a
+# compromised web application.
+# ---------------------------------------------------------------------------
+for service in django celery celery-beat; do
+    cid=$(docker compose ps -q "$service" 2>/dev/null | head -1)
+    [[ -n "$cid" ]] || continue
+
+    if docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' "$cid" 2>/dev/null \
+        | grep -q docker.sock; then
+        no "$service still mounts the Docker socket, which is root on this host"
+    else
+        ok "$service cannot reach the Docker API"
+    fi
+
+    runs_as=$(docker inspect -f '{{.Config.User}}' "$cid" 2>/dev/null)
+    if [[ -z "$runs_as" || "$runs_as" == "root" || "$runs_as" == 0* ]]; then
+        no "$service runs as root"
+    else
+        ok "$service runs as $runs_as"
+    fi
+
+    if docker inspect -f '{{range .HostConfig.SecurityOpt}}{{.}} {{end}}' "$cid" 2>/dev/null \
+        | grep -q no-new-privileges; then
+        ok "$service cannot gain privileges"
+    else
+        no "$service may gain privileges through setuid binaries"
+    fi
+done
+
 if [[ $public_admin -eq 1 ]]; then
     # A session cookie without Secure travels over any plain-HTTP request to
     # the same host. On a loopback-only panel that is contained. On a public

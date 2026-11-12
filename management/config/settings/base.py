@@ -491,6 +491,17 @@ CERTBOT_LOG_DIR = os.environ.get("CERTBOT_LOG_DIR", "/var/log/letsencrypt")
 
 # Where Nginx serves the HTTP-01 challenge from. Both containers mount it.
 ACME_WEBROOT_DIR = os.environ.get("ACME_WEBROOT_DIR", "/var/www/acme")
+# Where a DNS provider's credentials file is written for the length of one
+# certbot run. Inside the container only, mode 0600, and removed afterwards:
+# it holds a Cloudflare token or a key that can write to a zone.
+DNS_CREDENTIALS_DIR = os.environ.get(
+    "DNS_CREDENTIALS_DIR", "/var/lib/letsencrypt/dns-credentials"
+)
+# Encrypts DNS provider credentials in the database. Its own key rather
+# than SECRET_KEY, which gets rotated for unrelated reasons -- a rotation
+# that silently made every provider unusable would surface at the next
+# renewal, weeks later. openssl rand -hex 32
+CREDENTIAL_ENCRYPTION_KEY = os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "")
 
 # ECDSA by default: smaller handshakes, and every browser in use supports it.
 ACME_KEY_TYPE = os.environ.get("ACME_KEY_TYPE", "ecdsa")

@@ -183,3 +183,9 @@ class Certificate(models.Model):
             and self.key_path
             and self.status in (self.Status.ACTIVE, self.Status.RENEWING)
         )
+
+
+# Defined in its own module -- the certbot plugin details are substantial and
+# have nothing to do with certificates themselves -- and imported here because
+# Django only registers models in modules it loads.
+from apps.certificates.dns_providers import DnsProvider  # noqa: E402,F401

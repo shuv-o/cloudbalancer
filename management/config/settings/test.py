@@ -77,6 +77,7 @@ LETSENCRYPT_DIR = _path("LETSENCRYPT_DIR", "letsencrypt")
 CERTBOT_WORK_DIR = _path("CERTBOT_WORK_DIR", "letsencrypt-work")
 CERTBOT_LOG_DIR = _path("CERTBOT_LOG_DIR", "letsencrypt-log")
 ACME_WEBROOT_DIR = _path("ACME_WEBROOT_DIR", "acme")
+DNS_CREDENTIALS_DIR = _path("DNS_CREDENTIALS_DIR", "dns-credentials")
 
 for _path in (
     NGINX_CONF_DIR, NGINX_SSL_DIR, NGINX_CACHE_DIR,

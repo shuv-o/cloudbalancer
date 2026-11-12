@@ -60,6 +60,7 @@ RUN groupadd --gid "${APP_GID}" cloudbalancer \
     && mkdir -p /etc/nginx/conf.d /etc/nginx/ssl /etc/letsencrypt \
                 /var/lib/letsencrypt /var/log/letsencrypt /var/www/acme \
                 /var/cache/nginx /var/backups/cloudbalancer \
+                /var/lib/letsencrypt/dns-credentials \
                 /var/run/cloudbalancer /app/staticfiles \
     # A named volume created fresh inherits the ownership of the image
     # directory behind it, so these chowns are what make a clean install work

@@ -33,7 +33,12 @@ from common.services import model_update
 
 logger = logging.getLogger(__name__)
 
-_DOMAIN_RE = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$")
+# An optional leading `*.` is allowed because a wildcard is a name a CA will
+# issue for -- over DNS-01 only, which is enforced where the challenge is
+# chosen rather than here.
+_DOMAIN_RE = re.compile(
+    r"^(?:\*\.)?(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$"
+)
 
 
 class CertificateError(Exception):
@@ -175,6 +180,61 @@ def _validate_acme_domain(name: str) -> None:
         )
 
 
+def is_wildcard(name: str) -> bool:
+    return name.startswith("*.")
+
+
+def _challenge_plan(names: list[str]) -> tuple[object | None, str]:
+    """
+    Decide how these names will be proved, and say why if they cannot be.
+
+    HTTP-01 is the default and needs nothing configured. A wildcard forces
+    DNS-01 -- there is no choice about this and no setting that changes it:
+    proving control of a.example.com says nothing about b.example.com, so the
+    only proof a CA accepts for *.example.com is a TXT record in the zone.
+
+    When a DNS provider covers every name, DNS-01 is used even without a
+    wildcard. It is the better challenge where it is available: it needs no
+    inbound port 80, so it keeps working behind a firewall, during an
+    outage of this gateway, and before DNS has been pointed here at all.
+    """
+    from apps.certificates.dns_providers import provider_for
+
+    wildcards = [n for n in names if is_wildcard(n)]
+
+    providers = {}
+    for name in names:
+        provider = provider_for(name)
+        if provider is not None:
+            providers[provider.pk] = provider
+
+    uncovered = [n for n in names if provider_for(n) is None]
+
+    if wildcards and uncovered:
+        raise CertificateError(
+            f"{', '.join(wildcards)} needs DNS-01, which needs a DNS provider "
+            f"holding the zone. Nothing covers {', '.join(uncovered)}. Add a "
+            "provider under SSL -> DNS providers with that zone listed."
+        )
+
+    if uncovered:
+        return None, "http-01"
+
+    if len(providers) > 1:
+        # certbot takes one plugin per run. Splitting the names across
+        # providers would mean several certificates, which is a different
+        # thing from what was asked for.
+        raise CertificateError(
+            "These names are spread across "
+            f"{len(providers)} DNS providers ("
+            + ", ".join(sorted(p.name for p in providers.values()))
+            + "). One certificate is validated by one plugin, so request "
+            "them separately."
+        )
+
+    return next(iter(providers.values())), "dns-01"
+
+
 def certificate_issue_acme(
     *,
     domain: Domain,
@@ -215,25 +275,64 @@ def certificate_issue_acme(
         ]
     )
 
-    webroot = Path(settings.ACME_WEBROOT_DIR)
-    webroot.mkdir(parents=True, exist_ok=True)
+    try:
+        provider, challenge = _challenge_plan(names)
+    except CertificateError as exc:
+        certificate.status = Certificate.Status.FAILED
+        certificate.last_error = str(exc)
+        certificate.save(update_fields=["status", "last_error", "updated_at"])
+        logger.error("Cannot plan a challenge for %s: %s", domain.name, exc)
+        return certificate
 
     args = _certbot_base_args(account=account) + [
         "certonly",
-        "--webroot",
-        "--webroot-path", str(webroot),
-        "--cert-name", domain.name,
+        # The leading `*.` is not valid in a filename and certbot would
+        # create a directory called `*.example.com`, which every shell glob
+        # on this host then matches.
+        "--cert-name", domain.name.replace("*.", "wildcard."),
         "--key-type", settings.ACME_KEY_TYPE,
         "--agree-tos",
         "-m", account.email,
         "--keep-until-expiring",
     ]
+
+    credentials_dir = Path(settings.DNS_CREDENTIALS_DIR)
+    credentials_path = None
+
+    if challenge == "dns-01":
+        credentials_path = provider.write_credentials(credentials_dir)
+        args += provider.certbot_args(credentials_path)
+        # DNS-01 waits for propagation, which no webroot challenge does. A
+        # timeout sized for HTTP-01 cancels a perfectly healthy issuance
+        # partway through and leaves the TXT record behind.
+        timeout = settings.CERTBOT_TIMEOUT + provider.propagation_seconds + 60
+        logger.info(
+            "Issuing %s over DNS-01 via %s", domain.name, provider.name
+        )
+    else:
+        webroot = Path(settings.ACME_WEBROOT_DIR)
+        webroot.mkdir(parents=True, exist_ok=True)
+        args += ["--webroot", "--webroot-path", str(webroot)]
+        timeout = settings.CERTBOT_TIMEOUT
+
     if force:
         args.append("--force-renewal")
     for name in names:
         args += ["-d", name]
 
-    ok, output = _certbot_run(args, timeout=settings.CERTBOT_TIMEOUT)
+    try:
+        ok, output = _certbot_run(args, timeout=timeout)
+    finally:
+        # Removed whether it worked or not. It holds a Cloudflare token or a
+        # key that can write to a zone, and leaving it on disk between
+        # renewals widens the window for no benefit.
+        if credentials_path is not None:
+            credentials_path.unlink(missing_ok=True)
+
+    if provider is not None:
+        provider.last_used_at = timezone.now()
+        provider.last_error = "" if ok else output[-1000:]
+        provider.save(update_fields=["last_used_at", "last_error", "updated_at"])
 
     if not ok:
         certificate.status = Certificate.Status.FAILED
@@ -242,7 +341,10 @@ def certificate_issue_acme(
         logger.error("Certificate issuance failed for %s: %s", domain.name, output)
         return certificate
 
-    live_dir = Path(settings.LETSENCRYPT_DIR) / "live" / domain.name
+    live_dir = (
+        Path(settings.LETSENCRYPT_DIR) / "live"
+        / domain.name.replace("*.", "wildcard.")
+    )
     certificate.cert_path = str(live_dir / "fullchain.pem")
     certificate.key_path = str(live_dir / "privkey.pem")
     certificate.chain_path = str(live_dir / "chain.pem")
@@ -484,8 +586,25 @@ def certificate_renew(*, certificate: Certificate, force: bool = False) -> Certi
             f"{certificate.domain.name} uses a {certificate.get_issuer_display().lower()} "
             "certificate, which this gateway cannot renew on its own."
         )
+    # The names the certificate currently covers, minus the domain itself
+    # which certificate_issue_acme adds back.
+    #
+    # Without this, renewal reissues for the domain alone and every other
+    # name on the certificate is dropped. It mattered before and it matters
+    # much more now: a wildcard certificate is almost always *.example.com
+    # plus example.com, so a renewal that keeps only the domain silently
+    # replaces a working wildcard with a certificate covering one name --
+    # and the symptom is every subdomain failing TLS, sixty days later, at
+    # three in the morning.
+    covered = [
+        name
+        for name in (certificate.san_domains or [])
+        if name and name.lower() != certificate.domain.name.lower()
+    ]
+
     return certificate_issue_acme(
         domain=certificate.domain,
         account=certificate.acme_account,
+        extra_domains=covered,
         force=force,
     )

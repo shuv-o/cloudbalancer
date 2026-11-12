@@ -2,6 +2,7 @@ import { FormEvent, useState } from "react";
 import { api } from "../lib/api";
 import { useAction, useResource } from "../lib/hooks";
 import { useCan } from "../lib/session";
+import { DnsProviders } from "../components/DnsProviders";
 import { AcmeAccount, Certificate, Domain } from "../lib/types";
 import { dateTime, expiryPhrase, relativeTime } from "../lib/format";
 import {
@@ -425,6 +426,9 @@ export function Certificates() {
   // Hiding, not protecting: every endpoint behind these
   // buttons checks the role itself.
   const canWrite = useCan("operator");
+  // DNS provider credentials are a Cloudflare token or a key that can
+  // write to a zone, so the panel that manages them is admin-only.
+  const isAdmin = useCan("admin");
   const { data: certificates, initialLoading, reload } = useResource<Certificate[]>(
     "/api/v1/certificates/",
     15000,
@@ -646,6 +650,8 @@ export function Certificates() {
             </div>
           </Panel>
         )}
+
+        {isAdmin && <DnsProviders />}
 
         <Panel
           title="Certificate authorities"

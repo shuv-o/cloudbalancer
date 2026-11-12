@@ -22,6 +22,11 @@ Jinja2>=3.1
 
 # TLS: ACME issuance and certificate parsing
 certbot>=3.0
+# DNS-01, which is the only challenge a CA will accept for a wildcard.
+# Both, because zones live in both places: some at Cloudflare, some on a
+# BIND or Knot server reached over RFC2136.
+certbot-dns-cloudflare>=3.0
+certbot-dns-rfc2136>=3.0
 cryptography>=43.0
 
 # HTTP client — health probes, traffic status, Prometheus queries

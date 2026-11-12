@@ -48,3 +48,30 @@ def give_every_existing_account_the_role_it_already_had(apps, schema_editor):
 def drop_the_profiles(apps, schema_editor):
     """Reversing drops the table anyway; this keeps the migration reversible."""
     apps.get_model("security", "OperatorProfile").objects.all().delete()
+
+
+def bind_existing_passkeys_to_the_current_domain(apps, schema_editor):
+    """
+    Record the domain every existing passkey was enrolled under.
+
+    That domain is knowable: enrolment has only ever taken the relying party
+    from the published panel hostname, and refused when there was none. So a
+    passkey that exists was bound to whatever that hostname is now -- unless
+    it has since been changed, in which case the passkey already does not
+    work, and recording the current name is no worse than before.
+
+    Left blank on a panel that is not published. Blank never matches a
+    relying party, so those passkeys read as not usable here, which is true.
+    """
+    PanelAccessPolicy = apps.get_model("security", "PanelAccessPolicy")
+    Passkey = apps.get_model("security", "Passkey")
+
+    policy = PanelAccessPolicy.objects.order_by("pk").first()
+    if policy is None or not (policy.is_published and policy.panel_domain):
+        return
+
+    Passkey.objects.filter(rp_id="").update(rp_id=policy.panel_domain)
+
+
+def unbind_passkeys(apps, schema_editor):
+    """Reverse: the column goes away, so there is nothing to undo in it."""

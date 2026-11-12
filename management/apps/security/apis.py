@@ -33,7 +33,7 @@ from apps.security.serializers import (
     TotpDisableSerializer,
     TotpResetSerializer,
 )
-from apps.security.passkeys import passkeys_available
+from apps.security.passkeys import current_rp_id
 from apps.security.roles import DESCRIPTIONS, IsAdmin, Role, role_of
 from apps.security.services import (
     SecurityError,
@@ -301,7 +301,7 @@ class TotpDisableApi(APIView):
 
 class TotpResetApi(APIView):
     """
-    POST /api/v1/security/totp/reset/  — clear another operator's authenticator
+    POST /api/v1/security/totp/reset/  — clear another operator's second factors
 
     The break-glass path for a lost device. Superusers only, and recorded.
     """
@@ -322,8 +322,8 @@ class TotpResetApi(APIView):
 
         return Response({
             "message": (
-                f"{target.get_username()} will be asked to set up a new authenticator "
-                "at their next sign-in."
+                f"{target.get_username()}'s authenticator and passkeys were removed. "
+                "They will be asked to set up a new second factor at their next sign-in."
             )
         })
 
@@ -455,8 +455,10 @@ class PasskeyApi(APIView):
     def get(self, request):
         from apps.security.models import Passkey
 
+        rp_id = current_rp_id()
         return Response({
-            "available": passkeys_available(),
+            "available": rp_id is not None,
+            "rp_id": rp_id,
             "passkeys": [
                 {
                     "id": key.pk,
@@ -465,6 +467,11 @@ class PasskeyApi(APIView):
                     "transports": key.transports,
                     "created_at": key.created_at,
                     "last_used_at": key.last_used_at,
+                    "rp_id": key.rp_id,
+                    # Said outright rather than left for the client to
+                    # compare: a passkey from an earlier hostname is the one
+                    # failure here that looks exactly like a working key.
+                    "usable": rp_id is not None and key.rp_id == rp_id,
                 }
                 for key in Passkey.objects.filter(user=request.user)
             ],

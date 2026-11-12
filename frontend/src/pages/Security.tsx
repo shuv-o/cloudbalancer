@@ -62,6 +62,8 @@ interface Operator {
   role: string | null;
   last_login: string | null;
   has_second_factor: boolean;
+  has_authenticator: boolean;
+  passkey_count: number;
   recovery_codes_remaining: number;
 }
 
@@ -998,7 +1000,7 @@ export function Security({ user }: { user: User }) {
 
   const [resetFactor] = useAction(async (operator: Operator) => {
     await api.post("/api/v1/security/totp/reset/", { user_id: operator.id });
-    toast(`${operator.username} will set up a new authenticator at next sign-in.`);
+    toast(`${operator.username}'s authenticator and passkeys were removed. They will set up a new second factor at next sign-in.`);
     reloadOperators();
   });
 
@@ -1229,8 +1231,10 @@ export function Security({ user }: { user: User }) {
                     {operator.last_login
                       ? `last signed in ${relativeTime(operator.last_login)}`
                       : "never signed in"}
-                    {operator.has_second_factor &&
+                    {operator.has_authenticator &&
                       ` · ${operator.recovery_codes_remaining} recovery codes left`}
+                    {operator.passkey_count > 0 &&
+                      ` · ${operator.passkey_count} passkey${operator.passkey_count === 1 ? "" : "s"}`}
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
@@ -1264,11 +1268,11 @@ export function Security({ user }: { user: User }) {
                       ))}
                     </select>
                   )}
-                  {operator.has_second_factor && (
+                  {(operator.has_authenticator || operator.passkey_count > 0) && (
                     <button
                       className="btn btn--small"
                       onClick={() => resetFactor(operator)}
-                      title="For a lost device. They will enrol again at next sign-in."
+                      title="For a lost device. Removes their authenticator app and every passkey; they enrol again at next sign-in."
                     >
                       Reset 2FA
                     </button>

@@ -17,6 +17,8 @@ from apps.security.models import LoginAttempt, PanelAccessPolicy, Passkey
 from apps.security.testing import make_operator
 from apps.security.services import user_requires_totp_setup
 from apps.security.passkeys import (
+    LOGIN_CHALLENGES,
+    REGISTER_CHALLENGES,
     PasskeysUnavailable,
     authentication_options,
     passkeys_available,
@@ -86,12 +88,12 @@ class CeremonyOptionsTests(TestCase):
     def test_registration_stores_a_challenge_in_the_session(self):
         session = {}
         registration_options(user=self.user, session=session)
-        self.assertTrue(session["webauthn_challenge"])
+        self.assertEqual(len(session[REGISTER_CHALLENGES]), 1)
 
     def test_registration_excludes_passkeys_already_on_this_account(self):
         Passkey.objects.create(
             user=self.user, label="existing",
-            credential_id="dGVzdC1jcmVkZW50aWFs", public_key="a2V5",
+            credential_id="dGVzdC1jcmVkZW50aWFs", public_key="a2V5", rp_id=DOMAIN,
         )
         options = registration_options(user=self.user, session={})
         self.assertIn("dGVzdC1jcmVkZW50aWFs", options)
@@ -100,7 +102,7 @@ class CeremonyOptionsTests(TestCase):
         """Listing them would tell an unauthenticated caller who is enrolled."""
         Passkey.objects.create(
             user=self.user, label="existing",
-            credential_id="dGVzdC1jcmVkZW50aWFs", public_key="a2V5",
+            credential_id="dGVzdC1jcmVkZW50aWFs", public_key="a2V5", rp_id=DOMAIN,
         )
         options = authentication_options(session={})
         self.assertNotIn("dGVzdC1jcmVkZW50aWFs", options)
@@ -109,7 +111,7 @@ class CeremonyOptionsTests(TestCase):
         first, second = {}, {}
         authentication_options(session=first)
         authentication_options(session=second)
-        self.assertNotEqual(first["webauthn_challenge"], second["webauthn_challenge"])
+        self.assertNotEqual(set(first[LOGIN_CHALLENGES]), set(second[LOGIN_CHALLENGES]))
 
 
 class PasskeySignInGateTests(TestCase):
@@ -120,7 +122,7 @@ class PasskeySignInGateTests(TestCase):
         self.user = User.objects.create_user("operator", password="x" * 20)
         self.passkey = Passkey.objects.create(
             user=self.user, label="laptop",
-            credential_id="dGVzdC1jcmVkZW50aWFs", public_key="a2V5",
+            credential_id="dGVzdC1jcmVkZW50aWFs", public_key="a2V5", rp_id=DOMAIN,
         )
         self.url = reverse("passkey-login-verify")
 
@@ -187,7 +189,7 @@ class SecondFactorTests(TestCase):
     def test_a_passkey_satisfies_the_requirement(self):
         Passkey.objects.create(
             user=self.user, label="laptop",
-            credential_id="cGFzc2tleQ", public_key="a2V5",
+            credential_id="cGFzc2tleQ", public_key="a2V5", rp_id=DOMAIN,
         )
         self.assertFalse(user_requires_totp_setup(user=self.user))
 
@@ -195,7 +197,7 @@ class SecondFactorTests(TestCase):
         """Without this the operator signs in and is then refused every request."""
         Passkey.objects.create(
             user=self.user, label="laptop",
-            credential_id="cGFzc2tleQ", public_key="a2V5",
+            credential_id="cGFzc2tleQ", public_key="a2V5", rp_id=DOMAIN,
         )
         self.user.is_staff = True
         self.user.is_superuser = True
@@ -215,7 +217,7 @@ class PasskeyOwnershipTests(TestCase):
         self.other = make_operator(username="other")
         self.passkey = Passkey.objects.create(
             user=self.owner, label="owner key",
-            credential_id="b3duZXI", public_key="a2V5",
+            credential_id="b3duZXI", public_key="a2V5", rp_id=DOMAIN,
         )
 
     def test_another_operator_cannot_delete_it(self):

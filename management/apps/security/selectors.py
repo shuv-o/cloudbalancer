@@ -11,6 +11,7 @@ from apps.security.models import (
     BlockedAddress,
     LoginAttempt,
     PanelAccessPolicy,
+    Passkey,
     TotpDevice,
     TrafficProtectionPolicy,
 )
@@ -102,9 +103,11 @@ def security_summary() -> dict:
     )
 
     operators = User.objects.filter(is_active=True, is_staff=True)
-    with_totp = TotpDevice.objects.filter(
-        confirmed_at__isnull=False, user__in=operators
-    ).count()
+    # Either factor counts. Counting only authenticator apps reported every
+    # passkey-only operator as unprotected, which is the opposite of true.
+    with_totp = len(
+        _ids_with_a_second_factor() & set(operators.values_list("pk", flat=True))
+    )
 
     failures = sum(v for k, v in outcomes.items() if k != LoginAttempt.Outcome.SUCCESS)
 
@@ -138,6 +141,25 @@ def security_summary() -> dict:
     }
 
 
+def _ids_with_usable_passkey() -> set[int]:
+    """Accounts holding a passkey that works at the panel's current address."""
+    from apps.security.passkeys import current_rp_id
+
+    rp_id = current_rp_id()
+    if rp_id is None:
+        return set()
+    return set(Passkey.objects.filter(rp_id=rp_id).values_list("user_id", flat=True))
+
+
+def _ids_with_a_second_factor() -> set[int]:
+    """The same rule user_requires_totp_setup applies, for every account at once."""
+    totp = set(
+        TotpDevice.objects.filter(confirmed_at__isnull=False)
+        .values_list("user_id", flat=True)
+    )
+    return totp | _ids_with_usable_passkey()
+
+
 def operator_list() -> list[dict]:
     """Every operator account and whether it has a second factor."""
     from django.contrib.auth.models import User
@@ -146,6 +168,13 @@ def operator_list() -> list[dict]:
         d.user_id: d
         for d in TotpDevice.objects.filter(confirmed_at__isnull=False)
     }
+    with_passkey = _ids_with_usable_passkey()
+    # Any passkey at all, usable here or not, is something a reset clears --
+    # so it is what decides whether the reset is worth offering.
+    passkey_counts = dict(
+        Passkey.objects.values_list("user_id").annotate(n=Count("id"))
+        .values_list("user_id", "n")
+    )
     return [
         {
             "id": user.pk,
@@ -158,7 +187,9 @@ def operator_list() -> list[dict]:
             "role": role_of(user),
             "is_active": user.is_active,
             "last_login": user.last_login,
-            "has_second_factor": user.pk in devices,
+            "has_second_factor": user.pk in devices or user.pk in with_passkey,
+            "has_authenticator": user.pk in devices,
+            "passkey_count": passkey_counts.get(user.pk, 0),
             "recovery_codes_remaining": (
                 devices[user.pk].recovery_codes_remaining if user.pk in devices else 0
             ),

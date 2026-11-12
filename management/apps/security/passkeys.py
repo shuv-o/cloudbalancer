@@ -17,8 +17,11 @@ never from the request's Host header, which an attacker chooses. If the panel
 is not published, enrolment is refused rather than silently bound to something
 that will have to be thrown away.
 """
+import json
 import logging
+import time
 
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from webauthn import (
     generate_authentication_options,
@@ -39,9 +42,31 @@ from apps.security.models import PanelAccessPolicy, Passkey
 
 logger = logging.getLogger(__name__)
 
-# Where the challenge lives between the two halves of a ceremony. The session,
-# not the database: it is single-use, short-lived, and belongs to one browser.
-CHALLENGE_KEY = "webauthn_challenge"
+# Where challenges live between the two halves of a ceremony. The session, not
+# the database: each is single-use, short-lived, and belongs to one browser.
+#
+# One store per ceremony, and several challenges outstanding in each. A single
+# slot looked simpler and was not: a second tab, a page that refetched its
+# options, or the sign-in page open beside the account page each overwrote the
+# challenge the other was holding, and the failure surfaced on whichever
+# ceremony finished second -- as "expired", on a passkey that was fine.
+REGISTER_CHALLENGES = "webauthn_register_challenges"
+LOGIN_CHALLENGES = "webauthn_login_challenges"
+
+# How long a challenge stays redeemable. Long enough that an operator who
+# opens the page and reads it first is not refused; short enough that a
+# captured challenge is not useful for long. The panel refreshes its options
+# well inside this, so an idle page never holds a dead one.
+CHALLENGE_TTL_SECONDS = 300
+
+# Bounds the store. A page that refreshes on a timer, in a few tabs, stays far
+# below it; anything above it is evicted oldest first.
+MAX_OUTSTANDING_CHALLENGES = 8
+
+# How long the browser waits for the person to answer the prompt -- a fumbled
+# security key, a phone being fetched for a QR scan. Separate from the TTL
+# above, which is how long the server waits for the prompt to be *started*.
+CEREMONY_TIMEOUT_MS = 120_000
 
 RP_NAME = "CloudBalancer"
 
@@ -63,6 +88,58 @@ class RelyingParty:
         # Always https. A passkey ceremony in a browser requires a secure
         # context, so there is no http origin that could legitimately appear.
         self.origin = f"https://{rp_id}"
+
+
+
+def _issue_challenge(session, key: str, challenge: bytes, *, user_id=None) -> None:
+    """Remember a challenge as redeemable, pruning the expired and the excess."""
+    now = time.time()
+    store = {
+        value: entry
+        for value, entry in (session.get(key) or {}).items()
+        if isinstance(entry, dict) and now - entry.get("at", 0) < CHALLENGE_TTL_SECONDS
+    }
+    store[bytes_to_base64url(challenge)] = {"at": now, "user": user_id}
+
+    if len(store) > MAX_OUTSTANDING_CHALLENGES:
+        newest = sorted(store.items(), key=lambda item: item[1]["at"])
+        store = dict(newest[-MAX_OUTSTANDING_CHALLENGES:])
+
+    # Reassigned, never mutated in place: Django only saves a session whose
+    # top-level keys were set.
+    session[key] = store
+
+
+def _redeem_challenge(session, key: str, credential: dict, *, user_id=None) -> bytes:
+    """
+    Take the challenge this credential answers out of the store, once.
+
+    The browser signs over clientDataJSON, which names the challenge it was
+    given. Reading it from there is what lets several be outstanding: the
+    response says which one it answers, and verification then checks the
+    signature over exactly that. Trusting it is safe because verification
+    fails unless the server issued that challenge *and* the signature covers it.
+    """
+    try:
+        raw = (credential.get("response") or {}).get("clientDataJSON") or ""
+        answered = json.loads(base64url_to_bytes(raw))["challenge"]
+    except Exception as exc:
+        raise PasskeyError("The browser's response was not readable. Try again.") from exc
+
+    store = dict(session.get(key) or {})
+    entry = store.pop(answered, None)
+    session[key] = store
+
+    if not isinstance(entry, dict):
+        raise PasskeyError(
+            "This request has already been used or was never issued here. Try again."
+        )
+    if time.time() - entry.get("at", 0) >= CHALLENGE_TTL_SECONDS:
+        raise PasskeyError("This request expired before it was answered. Try again.")
+    if user_id is not None and entry.get("user") != user_id:
+        raise PasskeyError("This request was started by another account. Try again.")
+
+    return base64url_to_bytes(answered)
 
 
 def relying_party(*, policy: PanelAccessPolicy | None = None) -> RelyingParty:
@@ -87,11 +164,30 @@ def relying_party(*, policy: PanelAccessPolicy | None = None) -> RelyingParty:
 
 def passkeys_available() -> bool:
     """Whether enrolment can be offered at all, for the panel to ask before showing it."""
+    return current_rp_id() is not None
+
+
+def current_rp_id() -> str | None:
+    """The domain passkeys are bound to now, or None while the panel has none."""
     try:
-        relying_party()
+        return relying_party().id
     except PasskeysUnavailable:
-        return False
-    return True
+        return None
+
+
+def usable_passkeys(user):
+    """
+    This account's passkeys that can sign in at the panel's current address.
+
+    A passkey bound to a hostname the panel has since moved off cannot be
+    used, and must not go on counting as a second factor: if it did, the
+    account would be waved past the enrolment gate holding a factor that
+    cannot be presented.
+    """
+    rp_id = current_rp_id()
+    if rp_id is None:
+        return Passkey.objects.none()
+    return Passkey.objects.filter(user=user, rp_id=rp_id)
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +206,7 @@ def registration_options(*, user, session) -> str:
         user_id=str(user.pk).encode(),
         user_name=user.get_username(),
         user_display_name=user.get_full_name() or user.get_username(),
+        timeout=CEREMONY_TIMEOUT_MS,
         authenticator_selection=AuthenticatorSelectionCriteria(
             # Discoverable, so signing in needs no username typed first.
             resident_key=ResidentKeyRequirement.REQUIRED,
@@ -128,40 +225,61 @@ def registration_options(*, user, session) -> str:
         ],
     )
 
-    session[CHALLENGE_KEY] = bytes_to_base64url(options.challenge)
+    _issue_challenge(session, REGISTER_CHALLENGES, options.challenge, user_id=user.pk)
     return options_to_json(options)
 
 
 def registration_verify(*, user, session, credential: dict, label: str) -> Passkey:
     """Finish enrolment and store the public key."""
     rp = relying_party()
-    challenge = session.pop(CHALLENGE_KEY, None)
-    if not challenge:
-        raise PasskeyError(
-            "This enrolment has expired. Start again from the Security page."
-        )
+    challenge = _redeem_challenge(session, REGISTER_CHALLENGES, credential, user_id=user.pk)
 
     try:
         verified = verify_registration_response(
             credential=credential,
-            expected_challenge=base64url_to_bytes(challenge),
+            expected_challenge=challenge,
             expected_rp_id=rp.id,
             expected_origin=rp.origin,
             require_user_verification=True,
         )
     except Exception as exc:
+        # The library's reason goes to the log, not the browser: it names
+        # internals (origin, rp hash, attestation format) that help whoever
+        # is probing the endpoint more than whoever is enrolling.
         logger.warning("Passkey enrolment rejected for %s: %s", user, exc)
-        raise PasskeyError(f"That passkey could not be registered: {exc}") from exc
+        raise PasskeyError(
+            "That passkey could not be registered. If this keeps happening, "
+            "check the panel is open at https://%s." % rp.id
+        ) from exc
 
-    return Passkey.objects.create(
-        user=user,
-        label=(label or "").strip()[:64] or "Passkey",
-        credential_id=bytes_to_base64url(verified.credential_id),
-        public_key=bytes_to_base64url(verified.credential_public_key),
-        sign_count=verified.sign_count,
-        transports=credential.get("transports") or [],
-        is_backed_up=bool(getattr(verified, "credential_backed_up", False)),
-    )
+    credential_id = bytes_to_base64url(verified.credential_id)
+    try:
+        # Atomic so a duplicate -- a double-submitted form, or an authenticator
+        # that ignored excludeCredentials -- rolls back cleanly instead of
+        # poisoning the request's transaction and surfacing as a 500.
+        with transaction.atomic():
+            return Passkey.objects.create(
+                user=user,
+                label=(label or "").strip()[:64] or "Passkey",
+                credential_id=credential_id,
+                public_key=bytes_to_base64url(verified.credential_public_key),
+                sign_count=verified.sign_count,
+                transports=_clean_transports(credential.get("transports")),
+                is_backed_up=bool(getattr(verified, "credential_backed_up", False)),
+                rp_id=rp.id,
+            )
+    except IntegrityError as exc:
+        raise PasskeyError("This passkey is already registered.") from exc
+
+
+_KNOWN_TRANSPORTS = {"usb", "nfc", "ble", "internal", "hybrid", "smart-card", "cable"}
+
+
+def _clean_transports(value) -> list[str]:
+    """Browser-supplied, so kept to known strings rather than stored as given."""
+    if not isinstance(value, list):
+        return []
+    return [t for t in value if isinstance(t, str) and t in _KNOWN_TRANSPORTS]
 
 
 # ---------------------------------------------------------------------------
@@ -181,21 +299,22 @@ def authentication_options(*, session) -> str:
 
     options = generate_authentication_options(
         rp_id=rp.id,
+        timeout=CEREMONY_TIMEOUT_MS,
         user_verification=UserVerificationRequirement.REQUIRED,
     )
 
-    session[CHALLENGE_KEY] = bytes_to_base64url(options.challenge)
+    _issue_challenge(session, LOGIN_CHALLENGES, options.challenge)
     return options_to_json(options)
 
 
 def authentication_verify(*, session, credential: dict) -> Passkey:
     """Check an assertion and return the passkey that produced it."""
     rp = relying_party()
-    challenge = session.pop(CHALLENGE_KEY, None)
-    if not challenge:
-        raise PasskeyError("This sign-in has expired. Try again.")
+    challenge = _redeem_challenge(session, LOGIN_CHALLENGES, credential)
 
     credential_id = credential.get("id") or credential.get("rawId") or ""
+    if not isinstance(credential_id, str):
+        raise PasskeyError("That passkey is not registered on this panel.")
     passkey = (
         Passkey.objects
         .select_related("user")
@@ -204,11 +323,16 @@ def authentication_verify(*, session, credential: dict) -> Passkey:
     )
     if passkey is None:
         raise PasskeyError("That passkey is not registered on this panel.")
+    if passkey.rp_id != rp.id:
+        raise PasskeyError(
+            "That passkey was made for %s, not this address. Sign in another "
+            "way and add a new one." % (passkey.rp_id or "an earlier address")
+        )
 
     try:
         verified = verify_authentication_response(
             credential=credential,
-            expected_challenge=base64url_to_bytes(challenge),
+            expected_challenge=challenge,
             expected_rp_id=rp.id,
             expected_origin=rp.origin,
             credential_public_key=base64url_to_bytes(passkey.public_key),
@@ -222,7 +346,14 @@ def authentication_verify(*, session, credential: dict) -> Passkey:
         logger.warning("Passkey assertion rejected for %s: %s", passkey.user, exc)
         raise PasskeyError("That passkey was not accepted.") from exc
 
-    passkey.sign_count = verified.new_sign_count
-    passkey.last_used_at = timezone.now()
-    passkey.save(update_fields=["sign_count", "last_used_at"])
+    # Conditional on the count it was verified against, so two assertions
+    # racing each other cannot both win: the loser updates nothing and is
+    # refused, exactly as a replayed counter would be.
+    updated = Passkey.objects.filter(
+        pk=passkey.pk, sign_count=passkey.sign_count
+    ).update(sign_count=verified.new_sign_count, last_used_at=timezone.now())
+    if not updated:
+        raise PasskeyError("That passkey was not accepted.")
+
+    passkey.refresh_from_db()
     return passkey

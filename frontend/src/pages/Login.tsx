@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { ApiError, api, primeCsrf } from "../lib/api";
 import { User } from "../lib/types";
 import { Field } from "../components/ui";
+import { usePasskeyOptions } from "../lib/usePasskeyOptions";
 import * as webauthn from "../lib/webauthn";
 
 type Stage = "credentials" | "code";
@@ -16,9 +17,11 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
   const [busy, setBusy] = useState(false);
   const [passkeyBusy, setPasskeyBusy] = useState(false);
   const [passkeysOffered, setPasskeysOffered] = useState(false);
-  const [passkeyOptions, setPasskeyOptions] = useState<Record<string, unknown> | null>(
-    null,
-  );
+  // Set when the server refuses a password because this account's second
+  // factor is a passkey. The passkey button is then the way through, so it
+  // is the thing to draw the eye to.
+  const [passkeyRequired, setPasskeyRequired] = useState(false);
+  const passkey = usePasskeyOptions("/api/v1/auth/passkey/login/options/", passkeysOffered);
   const codeRef = useRef<HTMLInputElement>(null);
 
   // Two things have to be true: this browser can do passkeys, and the panel is
@@ -27,26 +30,17 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
   useEffect(() => {
     if (!webauthn.supported()) return;
 
+    // The options themselves are fetched ahead of the click, and kept fresh,
+    // by usePasskeyOptions -- see there for why both matter.
     let cancelled = false;
     api
       .get<{ passkeys_available?: boolean }>("/api/v1/auth/me/")
-      .then(async (body) => {
-        if (cancelled || !body.passkeys_available) return;
-
-        // Fetched now rather than inside the click. Safari drops the user
-        // activation that navigator.credentials.get() requires across an
-        // awaited network request, and reports the loss as NotAllowedError --
-        // indistinguishable from the person closing the prompt.
-        await primeCsrf();
-        const fetched = await api.post<Record<string, unknown>>(
-          "/api/v1/auth/passkey/login/options/",
-          {},
-        );
-        if (cancelled) return;
-        setPasskeyOptions(fetched);
-        setPasskeysOffered(true);
+      .then((body) => {
+        if (!cancelled) setPasskeysOffered(!!body.passkeys_available);
       })
-      .catch(() => setPasskeysOffered(false));
+      .catch(() => {
+        if (!cancelled) setPasskeysOffered(false);
+      });
 
     return () => {
       cancelled = true;
@@ -54,13 +48,14 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
   }, []);
 
   async function signInWithPasskey() {
-    if (!passkeyOptions) return;
+    const options = passkey.take();
+    if (!options) return;
     setPasskeyBusy(true);
     setError(null);
 
     try {
       // First await in the handler, so the gesture is still live.
-      const credential = await webauthn.get(passkeyOptions);
+      const credential = await webauthn.get(options);
       const user = await api.post<User>("/api/v1/auth/passkey/login/verify/", {
         credential,
       });
@@ -81,10 +76,7 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
       // Whether it was used or not, that challenge is spent. Without a fresh
       // one, a second attempt fails with "this sign-in has expired" and looks
       // like the passkey itself stopped working.
-      api
-        .post<Record<string, unknown>>("/api/v1/auth/passkey/login/options/", {})
-        .then(setPasskeyOptions)
-        .catch(() => setPasskeyOptions(null));
+      passkey.refresh();
       setPasskeyBusy(false);
     }
   }
@@ -104,9 +96,22 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
       onSignedIn({ ...user, authenticated: true });
     } catch (err) {
       const apiError = err as ApiError;
-      const body = apiError.body as { totp_required?: boolean } | null;
+      const body = apiError.body as {
+        totp_required?: boolean;
+        passkey_required?: boolean;
+      } | null;
 
-      if (apiError.status === 401 && body?.totp_required) {
+      if (apiError.status === 401 && body?.passkey_required) {
+        setPasskeyRequired(true);
+        setPassword("");
+        setError(
+          passkeysOffered
+            ? apiError.message
+            : "This account signs in with a passkey, and this browser or address " +
+                "cannot use one. Open the panel at its own hostname over HTTPS, in a " +
+                "browser that supports passkeys — or ask an admin to reset your second factor.",
+        );
+      } else if (apiError.status === 401 && body?.totp_required) {
         // The password was right and a code is needed. Not a failure — the form
         // simply has one more thing to ask for.
         const alreadyAsking = stage === "code";
@@ -158,11 +163,24 @@ export function Login({ onSignedIn }: { onSignedIn: (user: User) => void }) {
                   type="button"
                   className="btn btn--primary"
                   style={{ width: "100%", justifyContent: "center" }}
-                  disabled={passkeyBusy || busy || locked || !passkeyOptions}
+                  disabled={passkeyBusy || busy || locked || !passkey.options}
                   onClick={signInWithPasskey}
+                  autoFocus={passkeyRequired}
                 >
-                  {passkeyBusy ? "Waiting for your device…" : "Sign in with a passkey"}
+                  {passkeyBusy
+                    ? "Waiting for your device…"
+                    : !passkey.options && !passkey.error
+                      ? "Preparing…"
+                      : "Sign in with a passkey"}
                 </button>
+                {passkey.error && (
+                  <div className="notice notice--warn" style={{ marginTop: 10 }}>
+                    {passkey.error}{" "}
+                    <button type="button" className="btn btn--small" onClick={passkey.refresh}>
+                      Retry
+                    </button>
+                  </div>
+                )}
                 <div className="login__or">or use a password</div>
               </>
             )}

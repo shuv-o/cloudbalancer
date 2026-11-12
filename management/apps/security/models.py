@@ -535,6 +535,17 @@ class Passkey(models.Model):
     # loses the passkey, which changes what recovery advice is honest.
     is_backed_up = models.BooleanField(default=False)
 
+    # The domain this credential is bound to, fixed at enrolment. WebAuthn
+    # will never present it anywhere else, so when the panel moves hostname
+    # this is what tells the panel -- and the operator -- which passkeys
+    # stopped working, instead of them failing without a reason.
+    rp_id = models.CharField(
+        max_length=253,
+        blank=True,
+        default="",
+        help_text="The panel hostname this passkey was enrolled under",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     last_used_at = models.DateTimeField(null=True, blank=True)
 

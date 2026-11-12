@@ -27,6 +27,7 @@ from apps.security.models import LoginAttempt, PanelAccessPolicy, TotpDevice
 from apps.security.passkeys import (
     PasskeyError,
     passkeys_available,
+    usable_passkeys,
 )
 from apps.security.passkeys import (
     authentication_options as passkey_authentication_options,
@@ -186,6 +187,26 @@ class LoginApi(APIView):
                     },
                     status=status.HTTP_401_UNAUTHORIZED,
                 )
+
+        elif policy.require_totp and usable_passkeys(user).exists():
+            # The account's second factor is a passkey, and a password is not
+            # one. Letting this through would make "a second factor is
+            # required" mean "unless you also enrolled a passkey" -- the
+            # password alone would open a session that the enrolment gate then
+            # waves on, because the passkey counts as the factor it was never
+            # asked for. Nothing is recorded: the password was right, and the
+            # sign-in simply has to finish another way.
+            return Response(
+                {
+                    "error": (
+                        "This account signs in with a passkey. Use the passkey "
+                        "button. If you no longer have the device, ask an "
+                        "admin to reset your second factor."
+                    ),
+                    "passkey_required": True,
+                },
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
 
         # 5. In. Rotating the session key and CSRF token on sign-in is what
         #    stops a session fixed before authentication from being usable

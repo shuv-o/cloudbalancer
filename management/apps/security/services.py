@@ -379,7 +379,12 @@ def totp_disable(*, user, password: str, code: str) -> None:
 
 def totp_reset_for_user(*, actor, target_user) -> None:
     """
-    Clear another operator's authenticator, for when a device is lost.
+    Clear another operator's second factors, for when a device is lost.
+
+    Both kinds: the authenticator app and every passkey. Someone who lost the
+    phone that held both would otherwise be reset halfway, and someone whose
+    only factor was a passkey -- who cannot sign in with a password alone
+    while a second factor is required -- would have no way back at all.
 
     Admins only, and recorded — this is the break-glass path and it should
     be obvious in the audit trail when someone takes it.
@@ -394,10 +399,12 @@ def totp_reset_for_user(*, actor, target_user) -> None:
             "and a current code."
         )
 
-    TotpDevice.objects.filter(user=target_user).delete()
+    with transaction.atomic():
+        TotpDevice.objects.filter(user=target_user).delete()
+        passkeys_removed, _ = Passkey.objects.filter(user=target_user).delete()
     logger.warning(
-        "%s reset the authenticator for %s",
-        actor.get_username(), target_user.get_username(),
+        "%s reset the second factor for %s (authenticator and %d passkey(s))",
+        actor.get_username(), target_user.get_username(), passkeys_removed,
     )
 
 
@@ -415,7 +422,13 @@ def user_requires_totp_setup(*, user) -> bool:
     if not PanelAccessPolicy.load().require_totp:
         return False
 
-    if Passkey.objects.filter(user=user).exists():
+    # Only a passkey that works at the panel's current address. One bound to
+    # a hostname the panel has moved off cannot be presented, so counting it
+    # would leave the account with no usable second factor and no prompt to
+    # add one.
+    from apps.security.passkeys import usable_passkeys
+
+    if usable_passkeys(user).exists():
         return False
 
     device = TotpDevice.objects.filter(user=user).first()

@@ -131,7 +131,7 @@ server {
         limit_req zone=panel_login burst=3 nodelay;
         limit_req_status 429;
 
-        proxy_pass http://management_api;
+        proxy_pass http://$management_api;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $remote_addr;
@@ -144,7 +144,7 @@ server {
         limit_req zone=panel_api burst={{ panel.api_burst }} nodelay;
         limit_req_status 429;
 
-        proxy_pass http://management_api;
+        proxy_pass http://$management_api;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
 
@@ -170,7 +170,7 @@ server {
 {% if panel.expose_django_admin %}
     location /admin/ {
         limit_req zone=panel_api burst=10 nodelay;
-        proxy_pass http://management_api;
+        proxy_pass http://$management_api;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $remote_addr;
@@ -178,7 +178,7 @@ server {
     }
 
     location /static/ {
-        proxy_pass http://management_api;
+        proxy_pass http://$management_api;
         proxy_set_header Host $host;
         expires 1h;
     }

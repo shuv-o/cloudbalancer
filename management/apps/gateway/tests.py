@@ -879,3 +879,50 @@ class NegativeCachingTests(TestCase):
     def test_successful_responses_still_have_one(self):
         config = config_render()["20-servers.conf"]
         self.assertIn("proxy_cache", config)
+
+
+class ControlPlaneResolutionTests(TestCase):
+    """
+    The gateway must start when the control plane does not exist.
+
+    It used not to. default.conf declared `upstream management_api { server
+    django:8000; }`, and Nginx resolves the hosts in an upstream block when it
+    loads its configuration -- refusing to start if one does not resolve. So a
+    control plane that was down stopped the gateway from starting, and took
+    every domain it serves with it.
+
+    That is the exact coupling the Compose file claims to avoid by depending
+    on django with service_started rather than service_healthy. A DNS lookup
+    defeated the intent, and the symptom was an emerg about a host not found
+    in an upstream -- which reads as a configuration error, not as a
+    dependency.
+    """
+
+    def setUp(self):
+        from apps.certificates.services import certificate_generate_self_signed
+        from apps.security.models import PanelAccessPolicy
+        from apps.security.services import policy_update
+
+        domain = domain_create(name="control.example.com")
+        certificate_generate_self_signed(domain=domain)
+        policy_update(
+            policy=PanelAccessPolicy.load(),
+            data={"panel_domain": "control.example.com", "is_published": True},
+        )
+        self.config = config_render()["05-panel.conf"]
+
+    def test_the_panel_block_resolves_the_control_plane_through_a_variable(self):
+        for line in self.config.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("proxy_pass") and "management_api" in stripped:
+                with self.subTest(line=stripped):
+                    self.assertIn(
+                        "$management_api",
+                        stripped,
+                        "a literal address here is resolved at startup, which "
+                        "makes the gateway refuse to start without the control "
+                        "plane",
+                    )
+
+    def test_no_generated_block_declares_an_upstream_for_the_control_plane(self):
+        self.assertNotIn("server django:8000", self.config)

@@ -417,9 +417,11 @@ jobs:
 
       - name: nginx -t
         run: |
-          # --add-host: nginx resolves upstream hostnames when it loads a
-          # config, so the management upstream in default.conf has to resolve
-          # to something or the test fails for the wrong reason.
+          # The --add-host is now belt and braces: the management address
+          # goes through a resolver variable, so nothing here needs django to
+          # exist. It stays because a generated config could name a backend
+          # host, and that failing would be a real finding reported as a
+          # confusing one.
           docker run --rm \
             --add-host django:127.0.0.1 \
             -v "${{ runner.temp }}/conf.d:/etc/nginx/conf.d:ro" \
@@ -457,8 +459,11 @@ jobs:
           opts=$(cat /tmp/nginx-opts)
           echo "Starting with: ${opts:-(no extra options)}"
 
+          # Deliberately no --add-host django. The gateway went down because
+          # it could not resolve the control plane at startup, so the thing
+          # worth proving is that it starts when the control plane does not
+          # exist at all.
           docker run -d --name nginx-smoke \
-            --add-host django:127.0.0.1 \
             -v "${{ runner.temp }}/conf.d:/etc/nginx/conf.d:ro" \
             -v "${{ runner.temp }}/ssl:${{ runner.temp }}/ssl:ro" \
             -v "$PWD/gateway/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \

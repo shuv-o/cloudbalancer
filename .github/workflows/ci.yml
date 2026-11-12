@@ -355,6 +355,19 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Scan the gateway image
+        # The component that faces the internet, scanned here because this
+        # job already has it built. Reports rather than blocks, for the same
+        # reason the other scan does: a CVE published overnight in a base
+        # image should not stop an unrelated deploy.
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8  # v0.36.0
+        with:
+          image-ref: cloudbalancer-nginx:ci
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+
       - name: Render a representative configuration
         env:
           DJANGO_SETTINGS_MODULE: config.settings.test

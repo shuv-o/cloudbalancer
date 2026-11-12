@@ -43,6 +43,16 @@ COPY --from=builder \
 # Answers `nginx -t` and `nginx -s reload` for the control plane, so that the
 # management container does not need the Docker socket to reach Nginx. See the
 # script for why that mattered.
+# Deliberately no `apk upgrade` here, unlike the management image.
+#
+# The traffic-status module is compiled in the builder stage against this
+# exact Nginx version. An upgrade that moves Nginx even a patch release
+# makes the module binary-incompatible, and Nginx refuses to start with
+# "module is not binary compatible" -- the gateway, not the control plane.
+#
+# So base-image CVEs here are fixed by raising NGINX_VERSION, which rebuilds
+# the module against the same source. CI scans this image on every run,
+# which is how we find out one is needed.
 COPY reload-watcher.sh /usr/local/bin/cloudbalancer-reload-watcher.sh
 COPY docker-entrypoint.d/40-cloudbalancer-reload-watcher.sh \
      /docker-entrypoint.d/40-cloudbalancer-reload-watcher.sh

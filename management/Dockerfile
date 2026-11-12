@@ -23,7 +23,14 @@ WORKDIR /app
 # Docker API, and therefore root on the host, in exchange for sending two
 # signals. The Nginx image now runs a watcher that answers those two commands
 # through a shared directory instead.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# apt-get upgrade, because the base image lags its distribution's security
+# updates by however long since it was last rebuilt. Trivy found two HIGH
+# heap-overflow CVEs in zlib that way, both already fixed upstream. OS
+# packages were never pinned here, so there is no reproducibility to lose --
+# unlike the Python dependencies, which requirements.lock pins exactly.
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
         gcc libpq-dev curl ca-certificates gnupg \
     && install -d /usr/share/postgresql-common/pgdg \
     && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \

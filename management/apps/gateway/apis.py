@@ -52,11 +52,20 @@ class GatewayDeployApi(APIView):
 
 class GatewayConfigPreviewApi(APIView):
     """
-    GET /api/v1/gateway/config/  — what a deploy would write, without writing it
+    GET /api/v1/gateway/config/            — one entry per generated file
+    GET /api/v1/gateway/config/?combined=1 — the same files as one document
+
+    Not `?format=combined`, which is what this used to take and why the
+    preview never worked. `format` is reserved: DRF's URL_FORMAT_OVERRIDE
+    defaults to it, so the framework reads the value as the name of a renderer,
+    finds nothing called "combined", and raises NotFound before the view is
+    reached. The endpoint answered 404 for a query string it was written to
+    handle, which reads as a missing route rather than a reserved word.
     """
 
     def get(self, request):
-        if request.query_params.get("format") == "combined":
+        combined = request.query_params.get("combined", "").lower()
+        if combined in ("1", "true", "yes"):
             return Response({"config": config_render_combined()})
         return Response({"files": config_render()})
 

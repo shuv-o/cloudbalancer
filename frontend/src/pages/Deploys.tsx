@@ -27,7 +27,7 @@ export function Deploys() {
 
   const [showPreview, { busy: previewing }] = useAction(async () => {
     const response = await api.get<{ config: string }>(
-      "/api/v1/gateway/config/?format=combined",
+      "/api/v1/gateway/config/?combined=1",
     );
     setPreview(response.config);
   });

@@ -45,9 +45,17 @@ hr "Why Django stopped, if it did"
 # The startup chain is migrate && collectstatic && bootstrap && gunicorn. A
 # failure in any of them exits the container, and the reason is the last
 # thing before it went.
-docker compose logs --tail 40 --no-log-prefix django 2>&1 \
-    | grep -viE 'DisallowedHost|Traceback|^\s+File "|^\s+[a-z_]+ = |^\s+\^+$|^\s+response|^\s+host|^\s+raise' \
+#
+# With timestamps, because this is the whole log rather than the last attempt.
+# A container that has been restarting for an hour still contains every
+# failure from before whatever fixed it, and reading the oldest one as
+# current has cost more than one round trip.
+docker compose logs --tail 40 --no-log-prefix --timestamps django 2>&1 \
+    | grep -viE 'DisallowedHost|Traceback|^\S+ +File "|^\S+ +[a-z_]+ = |^\S+ +\^+$|^\S+ +response|^\S+ +host|^\S+ +raise' \
     | tail -25 | sed 's/^/  /'
+
+printf '\n  \033[2m(timestamps above: anything older than your last\033[0m\n'
+printf '  \033[2m `make fix-permissions` has already been dealt with)\033[0m\n'
 
 hr "Settings Django actually loaded"
 docker compose exec -T django python -c "
@@ -93,6 +101,38 @@ hr "From outside"
 printf '  panel      %s\n' "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:8081/ || echo unreachable)"
 printf '  panel api  %s\n' "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:8081/api/v1/auth/me/ || echo unreachable)"
 printf '  gateway    %s\n' "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost/health || echo unreachable)"
+
+hr "Ownership the management plane needs"
+
+# Asked here because the symptom -- a PermissionError deep in collectstatic,
+# or a container restarting -- is several steps from the cause, and the logs
+# that show it are historical: after running `make fix-permissions` they still
+# contain every failure from before it.
+for path in management/staticfiles gateway/nginx/conf.d; do
+    if [[ ! -e "$path" ]]; then
+        no "$path does not exist"
+        continue
+    fi
+    owner=$(stat -c '%u' "$path" 2>/dev/null || stat -f '%u' "$path" 2>/dev/null)
+    if [[ "$owner" == "10001" ]]; then
+        ok "$path belongs to the management plane"
+    else
+        no "$path belongs to uid ${owner:-?}, not 10001 -- run: make fix-permissions"
+    fi
+done
+
+for volume in letsencrypt ssl_certs acme_challenge nginx_control; do
+    name=$(docker volume ls -q | grep -E "_${volume}$" | head -1)
+    [[ -n "$name" ]] || continue
+    mount=$(docker volume inspect -f '{{.Mountpoint}}' "$name" 2>/dev/null) || continue
+    [[ -d "$mount" ]] || continue
+    owner=$(stat -c '%u' "$mount" 2>/dev/null)
+    if [[ "$owner" == "10001" ]]; then
+        ok "volume ${volume} belongs to the management plane"
+    else
+        no "volume ${volume} belongs to uid ${owner:-?}, not 10001 -- run: make fix-permissions"
+    fi
+done
 
 hr "Exposure"
 # `docker compose ps` lists published ports as a fact. It does not say whether

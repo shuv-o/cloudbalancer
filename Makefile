@@ -169,14 +169,20 @@ lock: ## Regenerate requirements.lock after changing requirements.txt
 	@echo "Rebuild the image for this to take effect: make build"
 
 fix-permissions: ## Hand the volumes to the non-root management user (one-off, after upgrading)
-	@echo "Giving the management volumes to uid 10001. Safe to re-run."
-	@echo "/app/staticfiles is included: collectstatic writes it, and it lives"
-	@echo "inside the bind-mounted source tree rather than in a volume."
+	@echo "Giving what the management plane writes to uid 10001. Safe to re-run."
+	@echo ""
+	@echo "Bind mounts first, directly on this host:"
+	@echo "  these are ordinary directories in this checkout, so a container"
+	@echo "  is not needed and its dropped capabilities cannot get in the way."
+	mkdir -p management/staticfiles gateway/nginx/conf.d
+	chown -R 10001:10001 management/staticfiles gateway/nginx/conf.d
+	@echo ""
+	@echo "Then the named volumes, which only exist inside a container:"
+	docker compose -f docker-compose.yml -f deploy/fix-permissions.yml \
+		run --rm --no-deps django 'chown -R 10001:10001 /etc/nginx/ssl /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /var/www/acme /var/backups/cloudbalancer /var/run/cloudbalancer'
+	@echo ""
 	@echo "Not /var/cache/nginx: Nginx creates and writes that as its own user,"
 	@echo "so handing it over would stop the gateway caching."
-	@echo ""
-	docker compose -f docker-compose.yml -f deploy/fix-permissions.yml \
-		run --rm --no-deps django 'mkdir -p /app/staticfiles && chown -Rc 10001:10001 /app/staticfiles /etc/nginx/conf.d /etc/nginx/ssl /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /var/www/acme /var/backups/cloudbalancer /var/run/cloudbalancer'
 	@echo ""
 	@echo "Done. Now: docker compose up -d"
 

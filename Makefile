@@ -149,6 +149,21 @@ check: ## Run nginx -t against the live configuration
 reload: ## Reload Nginx gracefully
 	docker compose exec nginx nginx -s reload
 
+rotate-logs: ## Rotate the access logs now, rather than waiting for the size check
+	@echo "Rotation normally happens on its own, in the gateway container, when a"
+	@echo "file passes NGINX_LOG_ROTATE_BYTES. This forces one at any size."
+	@echo ""
+	@# CLOUDBALANCER_WATCHER_SOURCED stops the script at its definitions.
+	@# Without it, sourcing enters the watcher's own loop and never returns.
+	docker compose exec -T nginx sh -c 'CLOUDBALANCER_WATCHER_SOURCED=1 . /usr/local/bin/cloudbalancer-reload-watcher.sh && rotate_logs force' \
+		|| { echo ""; echo "The watcher script could not be sourced. Is the nginx container up?"; exit 1; }
+	@echo ""
+	@echo "Analytics follows the rename on its next pass; nothing is lost and"
+	@echo "nothing is counted twice. 'make doctor' shows both sides."
+
+logs-sizes: ## What the access logs weigh, and how many generations are kept
+	@docker compose exec -T nginx sh -c 'ls -lhS /var/log/nginx/ | sed "s/^/  /"'
+
 cache-purge: ## Empty the whole cache
 	docker compose exec nginx sh -c 'rm -rf /var/cache/nginx/*'
 	docker compose exec nginx nginx -s reload

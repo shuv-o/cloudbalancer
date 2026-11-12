@@ -368,6 +368,20 @@ jobs:
           ignore-unfixed: true
           exit-code: "0"
 
+      - name: Log rotation does what it claims
+        run: |
+          # The failure this guards is silent: a rotation that renames
+          # without reopening leaves Nginx writing through the old
+          # descriptor, so the numbered file keeps growing and nothing is
+          # freed. It looks correct from the outside until the disk fills.
+          sh gateway/nginx/test-rotation.sh
+
+      - name: The watcher is valid shell under the image's own interpreter
+        run: |
+          docker run --rm -v "$PWD/gateway/nginx:/src:ro" cloudbalancer-nginx:ci \
+            sh -n /src/reload-watcher.sh
+          echo "reload-watcher.sh parses under the gateway image's ash"
+
       - name: Render a representative configuration
         env:
           DJANGO_SETTINGS_MODULE: config.settings.test

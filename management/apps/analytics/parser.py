@@ -62,6 +62,11 @@ TIME_FORMAT = "%d/%b/%Y:%H:%M:%S %z"
 # panel.access.log through the same mechanism, and that is traffic too.
 LOG_SUFFIX = ".access.log"
 
+# What the rotation in reload-watcher.sh renames the live file to. Only the
+# first generation is read: .2 onward is compressed history, and by the time
+# a file reaches it everything in it has been counted twice over.
+ROTATED_SUFFIX = ".1"
+
 
 @dataclass(frozen=True)
 class Request:
@@ -135,28 +140,55 @@ def parse_line(line: str) -> Request | None:
 
 
 def domain_for(path: Path) -> str:
-    """The domain a log file belongs to, from its name."""
+    """
+    The domain a log file belongs to, from its name.
+
+    example.com.access.log and example.com.access.log.1 are the same domain:
+    the second is only the first after a rename, and the requests in it were
+    served by the same server block.
+    """
     name = path.name
+    if name.endswith(ROTATED_SUFFIX):
+        name = name[: -len(ROTATED_SUFFIX)]
     if name.endswith(LOG_SUFFIX):
         return name[: -len(LOG_SUFFIX)]
     return name
 
 
+def live_name(rotated: str) -> str:
+    """The file a rotated one was, before the rename."""
+    if rotated.endswith(ROTATED_SUFFIX):
+        return rotated[: -len(ROTATED_SUFFIX)]
+    return rotated
+
+
 def log_files(directory: Path) -> list[Path]:
     """
-    Every per-domain access log, newest-named first.
+    Every per-domain access log, live and once-rotated.
 
     access.log itself is skipped: it is the catch-all server's, which by
     definition serves requests for hostnames this gateway does not know, and
     attributing those to a domain called "access" would be a lie.
+
+    The .1 files are included because rotation happens in the gateway on its
+    own schedule, not on this one. Between two passes here, a file can be
+    renamed out from under the cursor with lines in it that were never read;
+    they are in .1 and nowhere else. Reading both is what makes rotation
+    invisible to the counts rather than a small hole in them.
+
+    Live files sort before their own rotation, which is what the caller
+    wants: it reconciles the pair in that order.
     """
     if not directory.is_dir():
         return []
 
+    skip = {f"access{LOG_SUFFIX}", f"access{LOG_SUFFIX}{ROTATED_SUFFIX}"}
+
     return sorted(
         path
-        for path in directory.glob(f"*{LOG_SUFFIX}")
-        if path.is_file() and path.name != f"access{LOG_SUFFIX}"
+        for pattern in (f"*{LOG_SUFFIX}", f"*{LOG_SUFFIX}{ROTATED_SUFFIX}")
+        for path in directory.glob(pattern)
+        if path.is_file() and path.name not in skip
     )
 
 

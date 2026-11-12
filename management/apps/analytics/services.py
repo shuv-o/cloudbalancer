@@ -31,7 +31,15 @@ from apps.analytics.models import (
     LogCursor,
     PathDay,
 )
-from apps.analytics.parser import domain_for, log_files, parse_line, read_new_lines
+from apps.analytics.parser import (
+    ROTATED_SUFFIX,
+    domain_for,
+    head_digest,
+    live_name,
+    log_files,
+    parse_line,
+    read_new_lines,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +147,73 @@ class _Rollup:
             counts.example = request.agent[:300]
 
 
+def _hand_over_rotated_cursors(files: list[Path]) -> int:
+    """
+    Carry a cursor across a rename, before anything is read.
+
+    The gateway rotates on its own schedule. When it does, the file this app
+    was following is renamed to .1 and a new, empty one takes its name, so
+    the next pass sees two files and neither of them is where it left off:
+
+      * the live name has different content, so it is read from the start --
+        correct, it is a different file
+      * the .1 name has no cursor, so it would also be read from the start --
+        wrong, most of it has already been counted
+
+    Left alone, every rotation would re-count a whole file. The fix is to
+    recognise the renamed file and give it the offset that was following it.
+    The proof that it is the same file is the fingerprint: if .1 begins with
+    the bytes the live cursor recorded, the live cursor was reading this file
+    before the rename.
+
+    That test is also what stops it happening twice. After the handover the
+    live cursor holds the new file's fingerprint, which does not match .1 any
+    more, so a second pass adopts nothing.
+
+    Returns how many cursors moved, which the caller reports.
+    """
+    moved = 0
+
+    for path in files:
+        if not path.name.endswith(ROTATED_SUFFIX):
+            continue
+
+        source = LogCursor.objects.filter(file_name=live_name(path.name)).first()
+        if source is None or not source.head_digest or not source.offset:
+            continue
+
+        if head_digest(path) != source.head_digest:
+            continue
+
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size < source.offset:
+            # Not the file that offset belongs to, whatever the first bytes
+            # say. Reading it from the start is the safe answer.
+            continue
+
+        target, _ = LogCursor.objects.get_or_create(file_name=path.name)
+        if target.head_digest == source.head_digest and target.offset >= source.offset:
+            continue
+
+        LogCursor.objects.filter(pk=target.pk).update(
+            offset=source.offset,
+            inode=source.inode,
+            head_digest=source.head_digest,
+        )
+        logger.info(
+            "%s was rotated to %s; resuming at %d rather than re-reading it",
+            source.file_name,
+            path.name,
+            source.offset,
+        )
+        moved += 1
+
+    return moved
+
+
 def ingest(*, directory: Path | None = None) -> dict:
     """
     Read whatever is new and fold it in.
@@ -156,6 +231,11 @@ def ingest(*, directory: Path | None = None) -> dict:
             "unparsed": 0,
             "reason": f"no per-domain access logs in {directory}",
         }
+
+    # Before a byte is read. A rotation that happened since the last pass
+    # has to be recognised first, or the renamed file looks new and gets
+    # counted a second time.
+    handovers = _hand_over_rotated_cursors(files)
 
     rollup = _Rollup()
     read = unparsed = 0
@@ -178,20 +258,25 @@ def ingest(*, directory: Path | None = None) -> dict:
             offset = cursor.offset + sum(len(line.encode()) + 1 for line in lines)
 
         domain = domain_for(path)
+        rejected = 0
         for line in lines:
             request = parse_line(line)
             if request is None:
-                unparsed += 1
+                rejected += 1
                 continue
             rollup.add(domain, request)
 
         read += len(lines)
+        unparsed += rejected
         LogCursor.objects.filter(pk=cursor.pk).update(
             offset=offset,
             inode=inode,
             head_digest=digest,
             lines_read=F("lines_read") + len(lines),
-            lines_unparsed=F("lines_unparsed") + unparsed,
+            # This file's rejects, not the pass's. It used to add the running
+            # total, so every file after the first inherited the ones before
+            # it and the column grew quadratically in the number of domains.
+            lines_unparsed=F("lines_unparsed") + rejected,
             last_read_at=timezone.now(),
         )
 
@@ -202,7 +287,13 @@ def ingest(*, directory: Path | None = None) -> dict:
     written = _persist(rollup)
     geo.forget()
 
-    return {"files": len(files), "lines": read, "unparsed": unparsed, **written}
+    return {
+        "files": len(files),
+        "lines": read,
+        "unparsed": unparsed,
+        "rotations_followed": handovers,
+        **written,
+    }
 
 
 def _persist(rollup: _Rollup) -> dict:

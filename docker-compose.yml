@@ -131,6 +131,14 @@ services:
       # Where the control plane asks for a config test or a reload. Writable
       # from both sides: the panel writes requests, the watcher writes answers.
       - nginx_control:/var/run/cloudbalancer
+    environment:
+      # Rotation, performed by the reload watcher. It holds the only
+      # read-write mount of the log volume, and rotating from here means a
+      # control plane that is down or wedged cannot let a disk fill.
+      CLOUDBALANCER_LOG_ROTATE_BYTES: ${NGINX_LOG_ROTATE_BYTES:-67108864}
+      CLOUDBALANCER_LOG_KEEP: ${NGINX_LOG_KEEP:-7}
+      CLOUDBALANCER_LOG_CHECK_SECONDS: ${NGINX_LOG_CHECK_SECONDS:-60}
+      CLOUDBALANCER_LOG_MIN_INTERVAL_SECONDS: ${NGINX_LOG_MIN_INTERVAL_SECONDS:-900}
     depends_on:
       # service_started, not service_healthy, and deliberately. Proxied traffic
       # does not involve the control plane, so a sick Django must not stop the

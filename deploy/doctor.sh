@@ -187,6 +187,87 @@ else
     fi
 fi
 
+hr "Access logs"
+
+# Unbounded log growth is one of the few failures that takes a gateway down
+# without anything in the gateway going wrong. The rotation lives in the
+# Nginx container because it owns the files and because it must keep working
+# when the control plane does not -- so this reports on it from the outside,
+# which is the only place both halves are visible.
+log_report=$(docker compose exec -T nginx sh -c '
+dir=${CLOUDBALANCER_LOG_DIR:-/var/log/nginx}
+threshold=${CLOUDBALANCER_LOG_ROTATE_BYTES:-67108864}
+keep=${CLOUDBALANCER_LOG_KEEP:-7}
+every=${CLOUDBALANCER_LOG_CHECK_SECONDS:-60}
+
+echo "SETTINGS $threshold $keep $every"
+echo "TOTAL $(du -sk "$dir" 2>/dev/null | cut -f1)"
+
+# Plain ps and grep rather than pgrep -f: the image is BusyBox, and its
+# pgrep has been built without -f in some builds. The bracket stops the
+# grep from matching its own command line.
+if ps 2>/dev/null | grep -q "[r]eload-watcher"; then
+    echo "WATCHER running"
+else
+    echo "WATCHER missing"
+fi
+
+for f in "$dir"/*.log; do
+    [ -f "$f" ] || continue
+    size=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    gens=$(ls "$f".* 2>/dev/null | wc -l | tr -d " ")
+    echo "LOG $(basename "$f") $size $gens"
+done
+' 2>/dev/null | tr -d '\r')
+
+if [[ -z "$log_report" ]]; then
+    no "could not read the log directory -- is the nginx container up?"
+else
+    threshold=$(awk '/^SETTINGS/ {print $2}' <<< "$log_report")
+    keep=$(awk '/^SETTINGS/ {print $3}' <<< "$log_report")
+    every=$(awk '/^SETTINGS/ {print $4}' <<< "$log_report")
+    total_kb=$(awk '/^TOTAL/ {print $2}' <<< "$log_report")
+
+    if [[ "$every" == "0" ]]; then
+        no "rotation is disabled (NGINX_LOG_CHECK_SECONDS=0); these files grow without limit"
+    elif grep -q '^WATCHER running' <<< "$log_report"; then
+        ok "rotation active: over $((threshold / 1048576))MB, keeping $keep, checked every ${every}s"
+    else
+        no "the reload watcher is not running, so nothing rotates these files"
+    fi
+
+    printf '  %-44s %10s %s\n' "file" "size" "older"
+    while read -r _ name size gens; do
+        human=$(numfmt --to=iec --suffix=B "$size" 2>/dev/null || echo "${size}B")
+        flag=""
+        # Over the threshold at the moment doctor looked is not a fault --
+        # the next check rotates it. Well over means the checks are not
+        # happening, which is.
+        if [[ "$size" -gt $((threshold * 2)) ]]; then
+            flag=" <- past the threshold and not rotated"
+        fi
+        printf '  %-44s %10s %5s%s\n' "$name" "$human" "$gens" "$flag"
+    done < <(grep '^LOG ' <<< "$log_report")
+
+    if [[ -n "${total_kb:-}" ]]; then
+        printf '  %-44s %10s\n' "total on disk" \
+            "$(numfmt --to=iec --suffix=B $((total_kb * 1024)) 2>/dev/null || echo "${total_kb}K")"
+    fi
+
+    # The reading side. A cursor sitting far behind the end of its file means
+    # ingestion has stalled, and a rotation would then lose what it has not
+    # read -- the one case where rotation and analytics interact badly.
+    docker compose exec -T django python -c "
+import django; django.setup()
+from apps.analytics.models import LogCursor
+rows = LogCursor.objects.order_by('file_name')
+if not rows:
+    print('  no ingestion cursors yet')
+for row in rows:
+    print(f'  cursor {row.file_name:<40} @ {row.offset:>12,}  read {row.lines_read:,}')
+" 2>/dev/null | tr -d '\r'
+fi
+
 hr "Exposure"
 # `docker compose ps` lists published ports as a fact. It does not say whether
 # an admin surface ended up on a public interface -- and that is the one

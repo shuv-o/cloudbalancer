@@ -697,6 +697,24 @@ def cache_purge_all() -> CachePurgeResult:
             else:
                 entry.unlink()
             purged += 1
+        except PermissionError:
+            # Nginx owns this tree, because it is the thing that writes it.
+            # The control plane stopped running as root, so it can no longer
+            # delete another user's files -- and it should not be given the
+            # chance to, since the ownership is what keeps the cache working.
+            #
+            # Said plainly rather than as an errno, because the next question
+            # is always "so how do I clear the cache".
+            errors.append(
+                f"{entry.name}: the gateway owns its cache and the control "
+                "plane no longer runs as root, so it cannot delete these "
+                "directly. Reloading the gateway does not clear a cache "
+                "either. Until this is routed through the gateway itself, "
+                "clear it from the host: "
+                "docker compose exec nginx sh -c 'rm -rf /var/cache/nginx/*' "
+                "&& make reload"
+            )
+            break
         except OSError as exc:
             errors.append(str(exc))
 

@@ -24,13 +24,17 @@ set -eu
 #
 # So it is named here, once, with the command that fixes it.
 # -----------------------------------------------------------------------------
+#
+# /var/cache/nginx is deliberately absent from this list. Nginx creates and
+# writes that tree as its own user, so it cannot also belong to this one --
+# handing it over would stop the gateway caching, which is a worse outcome
+# than the one thing it costs us. See cache_purge_all().
 unwritable=""
 for directory in \
     /etc/nginx/conf.d \
     /etc/nginx/ssl \
     /etc/letsencrypt \
     /var/www/acme \
-    /var/cache/nginx \
     /var/backups/cloudbalancer \
     /var/run/cloudbalancer
 do

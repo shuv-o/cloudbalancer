@@ -1,0 +1,19 @@
+# =============================================================================
+# A one-off overlay for `make fix-permissions`.
+#
+# The management service drops every capability, which is correct for running
+# it and fatal for this: `docker compose run` inherits cap_drop, so the
+# container is uid 0 with no powers and chown returns "Operation not
+# permitted" on every path. That is what the first version of this did.
+#
+# So the overlay puts back exactly the three capabilities a recursive chown
+# needs, for the length of one command, in a file whose name says what it is
+# for.
+# =============================================================================
+services:
+  django:
+    user: "0:0"
+    cap_drop: []
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    entrypoint: ["sh", "-c"]
+    restart: "no"

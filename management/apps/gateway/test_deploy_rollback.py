@@ -172,15 +172,42 @@ class ReachabilityReportingTests(TestCase):
         self.assertFalse(result.reachable)
 
     def test_no_nginx_and_no_control_directory_is_unreachable(self):
+        """
+        Falling back to a direct call, with nothing to call.
+
+        subprocess is patched rather than relying on nginx being absent: the
+        first version of this assumed it would not be installed, which is true
+        on a developer machine and false on a GitHub runner, where the image
+        ships it. The test then exercised a real `nginx -t` and reported the
+        opposite result -- an environment assumption masquerading as an
+        assertion.
+        """
         from django.test import override_settings
 
         with override_settings(NGINX_CONTROL_DIR="/nonexistent/cloudbalancer"):
-            from apps.gateway.services import nginx_test
+            from apps.gateway import services
 
-            result = nginx_test()
+            with mock.patch.object(
+                services.subprocess, "run", side_effect=FileNotFoundError
+            ):
+                result = services.nginx_test()
 
         self.assertFalse(result.success)
         self.assertFalse(result.reachable)
+
+    def test_an_nginx_that_runs_and_refuses_is_reachable(self):
+        """The other half of the same fallback: a real answer, however bad."""
+        from django.test import override_settings
+
+        with override_settings(NGINX_CONTROL_DIR="/nonexistent/cloudbalancer"):
+            from apps.gateway import services
+
+            completed = mock.Mock(returncode=1, stdout="", stderr="[emerg] bad")
+            with mock.patch.object(services.subprocess, "run", return_value=completed):
+                result = services.nginx_test()
+
+        self.assertFalse(result.success)
+        self.assertTrue(result.reachable)
 
     def test_a_watcher_that_answers_badly_is_reachable(self):
         """A real rejection, which must still roll back."""

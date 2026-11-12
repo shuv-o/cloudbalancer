@@ -235,7 +235,13 @@ export function Overview() {
       <div className="grid grid--2">
         <Panel
           title="Traffic by domain"
-          hint={traffic.available ? "Since Nginx last started" : undefined}
+          hint={
+            traffic.available
+              ? `Live counters — since Nginx started ${relativeTime(
+                  new Date(Date.now() - traffic.uptime_seconds * 1000).toISOString(),
+                ).replace(" ago", " ago")}. History is in the charts above.`
+              : undefined
+          }
           flush
         >
           {traffic.domains.length === 0 ? (

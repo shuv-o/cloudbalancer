@@ -487,6 +487,21 @@ def traffic_series(
             f'sum(rate(nginx_vts_server_requests_total{{{server},code=~"[2345]xx"}}'
             f"[{window}])) by (code)"
         ),
+        # Per domain, over the chosen range.
+        #
+        # The live per-domain table comes from Nginx's own counters, which
+        # live in shared memory and start again from zero whenever the
+        # container restarts -- a deploy, a reboot, an image rebuild. That is
+        # correct for "what is happening now" and reads as data loss to
+        # anyone looking for a month of history.
+        #
+        # This is the history. rate() over a window is immune to a counter
+        # going back to zero, so a restart leaves no gap and no spike, and
+        # the range picker reaches back as far as Prometheus retains.
+        "requests_by_domain": _range(
+            f'sum(rate(nginx_vts_server_requests_total{{{server},code=~"[1-5]xx"}}'
+            f"[{window}])) by (host)"
+        ),
     }
 
 

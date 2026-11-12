@@ -315,6 +315,8 @@ export interface TimeSeries {
   cache_hit_ratio: Series[];
   upstream_latency_ms: Series[];
   status_classes: Series[];
+  /** Per-domain request rate over the chosen range, which survives restarts. */
+  requests_by_domain: Series[];
 }
 
 export interface GatewayStatus {

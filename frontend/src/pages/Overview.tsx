@@ -222,6 +222,21 @@ export function Overview() {
           />
         </Panel>
 
+        <Panel
+          title="Served within"
+          hint="Share of requests inside each latency boundary — a mean hides the tail"
+        >
+          <Chart
+            series={series?.latency_buckets ?? []}
+            formatValue={(v) => `${v.toFixed(1)}%`}
+            emptyMessage={emptyChart(
+              series,
+              "Needs vhost_traffic_status_histogram_buckets in nginx.conf and a reload.",
+            )}
+          />
+          <ChartLegend series={series?.latency_buckets ?? []} />
+        </Panel>
+
         <Panel title="Backend response time" hint="What the backends themselves cost, per upstream">
           <Chart
             series={series?.upstream_latency_ms ?? []}

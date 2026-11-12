@@ -317,6 +317,8 @@ export interface TimeSeries {
   status_classes: Series[];
   /** Per-domain request rate over the chosen range, which survives restarts. */
   requests_by_domain: Series[];
+  /** Share of requests served within each latency boundary, by `le` label. */
+  latency_buckets: Series[];
 }
 
 export interface GatewayStatus {

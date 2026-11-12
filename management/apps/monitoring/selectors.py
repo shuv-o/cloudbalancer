@@ -498,6 +498,20 @@ def traffic_series(
         # This is the history. rate() over a window is immune to a counter
         # going back to zero, so a restart leaves no gap and no spike, and
         # the range picker reaches back as far as Prometheus retains.
+        # The latency distribution, as a share of requests in each bucket.
+        #
+        # A mean hides the tail completely: ten thousand requests at 5ms and
+        # a hundred at nine seconds average to something that looks healthy,
+        # and the hundred are the ones somebody is complaining about. These
+        # are cumulative counters -- le="0.1" counts everything at or below
+        # 100ms -- so the chart shows what fraction of traffic was served
+        # within each boundary.
+        "latency_buckets": _range(
+            f"sum(rate(nginx_vts_server_request_duration_seconds_bucket"
+            f'{{{server}}}[{window}])) by (le)'
+            f" / clamp_min(sum(rate(nginx_vts_server_request_duration_seconds_count"
+            f'{{{server}}}[{window}])), 1) * 100'
+        ),
         "requests_by_domain": _range(
             f'sum(rate(nginx_vts_server_requests_total{{{server},code=~"[1-5]xx"}}'
             f"[{window}])) by (host)"

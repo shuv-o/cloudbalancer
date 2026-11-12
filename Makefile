@@ -7,7 +7,7 @@
     certs renew test test-local bench-up bench bench-log panel-build \
     panel-dev panel-ca panel-cert panel-revoke panel-status \
     bench-protection backup backup-list restore backup-key fix-permissions \
-    lock
+    lock repair-config
 .DEFAULT_GOAL := help
 
 help: ## Show this help
@@ -126,6 +126,19 @@ TAG_REF ?= $(patsubst sha-%,%,$(TAG))
 
 deploy: ## Render the config from the database and reload Nginx
 	docker compose exec django python manage.py deploy_config
+
+repair-config: ## Rewrite the generated config and restart Nginx, for when it will not start
+	@echo "For a gateway that is refusing to start on the configuration it has."
+	@echo ""
+	@echo "A normal deploy cannot help there: it writes, asks Nginx to test, and"
+	@echo "restores its backup if the test does not come back. A gateway that is"
+	@echo "down cannot answer a test, so the deploy would put the file it is"
+	@echo "failing on back. This writes and restarts instead of asking."
+	@echo ""
+	docker compose exec -T django python manage.py deploy_config --render-to /etc/nginx/conf.d
+	docker compose up -d --force-recreate nginx
+	@echo ""
+	docker compose exec -T nginx nginx -t
 
 config: ## Print the config a deploy would write, without writing it
 	docker compose exec django python manage.py deploy_config --dry-run

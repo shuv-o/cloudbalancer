@@ -115,6 +115,36 @@ printf '  panel      %s\n' "$(curl -s -o /dev/null -w '%{http_code}' --max-time 
 printf '  panel api  %s\n' "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:8081/api/v1/auth/me/ || echo unreachable)"
 printf '  gateway    %s\n' "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost/health || echo unreachable)"
 
+hr "Is the live config what the database would generate?"
+
+# The outage this exists for: a change to the hand-written config removed an
+# upstream that the generated files still referenced, the control plane was
+# down and could not regenerate them, and Nginx refused to start on a file
+# nobody knew was stale. Nothing reported the drift, because nothing looked.
+if docker compose exec -T django python manage.py deploy_config \
+       --render-to /tmp/cb-drift >/dev/null 2>&1; then
+    drift=0
+    for name in 00-maps.conf 05-panel.conf 10-upstreams.conf 20-servers.conf; do
+        live="gateway/nginx/conf.d/${name}"
+        [[ -f "$live" ]] || continue
+        if ! docker compose exec -T django \
+               cmp -s "/tmp/cb-drift/${name}" "/etc/nginx/conf.d/${name}" 2>/dev/null; then
+            no "${name} on disk differs from what the database would generate"
+            drift=1
+        fi
+    done
+    if [[ $drift -eq 0 ]]; then
+        ok "every generated file matches the database"
+    else
+        printf '\n      \033[33mSomething changed without a deploy. If the gateway is\033[0m\n'
+        printf '      \033[33mrunning:  make deploy\033[0m\n'
+        printf '      \033[33mIf it is refusing to start:  make repair-config\033[0m\n'
+    fi
+    docker compose exec -T django rm -rf /tmp/cb-drift >/dev/null 2>&1 || true
+else
+    no "could not render a comparison -- is the control plane running?"
+fi
+
 hr "Ownership the management plane needs"
 
 # Asked here because the symptom -- a PermissionError deep in collectstatic,

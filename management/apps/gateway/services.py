@@ -496,7 +496,9 @@ def config_restore(backup_path: Path) -> None:
 # Nginx control
 # ---------------------------------------------------------------------------
 
-def _nginx_via_control_dir(command: str, *, timeout: int) -> tuple[bool, str] | None:
+def _nginx_via_control_dir(
+    command: str, *, timeout: int
+) -> tuple[bool, str, bool] | None:
     """
     Ask the watcher in the Nginx container to run one of two fixed commands.
 
@@ -545,7 +547,7 @@ def _nginx_via_control_dir(command: str, *, timeout: int) -> tuple[bool, str] | 
                 answer.unlink(missing_ok=True)
 
             code, _, output = body.partition("\n")
-            return code.strip() == "0", output.strip()
+            return code.strip() == "0", output.strip(), True
         time.sleep(0.1)
 
     # Leave the request in place. The watcher may still be working, and the
@@ -554,18 +556,18 @@ def _nginx_via_control_dir(command: str, *, timeout: int) -> tuple[bool, str] | 
     return False, (
         f"Nginx did not answer '{command}' within {timeout}s. The container "
         "may be stopped, or its reload watcher may not be running."
-    )
+    ), False
 
 
-def _nginx_direct(args: list[str], *, timeout: int) -> tuple[bool, str]:
+def _nginx_direct(args: list[str], *, timeout: int) -> tuple[bool, str, bool]:
     """Run Nginx here, for a deployment that is not split across containers."""
     try:
         result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:
-        return False, "nginx is not installed here and no control directory exists"
+        return False, "nginx is not installed here and no control directory exists", False
     except subprocess.TimeoutExpired:
-        return False, f"{' '.join(args)} timed out after {timeout}s"
-    return result.returncode == 0, (result.stdout + result.stderr).strip()
+        return False, f"{' '.join(args)} timed out after {timeout}s", False
+    return result.returncode == 0, (result.stdout + result.stderr).strip(), True
 
 
 def nginx_test() -> NginxTestResult:
@@ -574,9 +576,11 @@ def nginx_test() -> NginxTestResult:
     if answer is None:
         answer = _nginx_direct(["nginx", "-t"], timeout=settings.NGINX_CONTROL_TIMEOUT)
 
-    success, output = answer
-    logger.info("nginx -t: %s", "ok" if success else "failed")
-    return NginxTestResult(success=success, output=output)
+    success, output, reachable = answer
+    logger.info(
+        "nginx -t: %s", "ok" if success else ("failed" if reachable else "unreachable")
+    )
+    return NginxTestResult(success=success, output=output, reachable=reachable)
 
 
 def nginx_reload() -> NginxTestResult:
@@ -597,9 +601,11 @@ def nginx_reload() -> NginxTestResult:
     if answer is None:
         answer = _nginx_direct(["nginx", "-s", "reload"], timeout=settings.NGINX_CONTROL_TIMEOUT)
 
-    success, output = answer
-    logger.info("nginx reload: %s", "ok" if success else "failed")
-    return NginxTestResult(success=success, output=output)
+    success, output, reachable = answer
+    logger.info(
+        "nginx reload: %s", "ok" if success else ("failed" if reachable else "unreachable")
+    )
+    return NginxTestResult(success=success, output=output, reachable=reachable)
 
 
 # ---------------------------------------------------------------------------
@@ -632,14 +638,42 @@ def config_deploy(*, user=None) -> ConfigDeployLog:
         log.save(update_fields=["status"])
 
         test = nginx_test()
+
+        if not test.success and not test.reachable:
+            # Nginx could not be asked, which is not the same as Nginx saying
+            # no -- and the difference decides whether rolling back helps or
+            # hurts. A gateway that is down is usually down *because of* the
+            # configuration on disk, so restoring it puts the broken file back
+            # and the deploy that would have fixed things becomes the deploy
+            # that kept them broken. The freshly rendered configuration stays,
+            # and loads when Nginx next starts.
+            log.status = ConfigDeployLog.Status.FAILED
+            log.error_output = (
+                f"{test.output}\n\n"
+                "The new configuration has been written and kept, because it "
+                "could not be checked rather than because it failed a check. "
+                "It will be loaded the next time Nginx starts. Start it and "
+                "deploy again to verify:\n"
+                "    docker compose up -d --force-recreate nginx"
+            )[:8000]
+            log.completed_at = timezone.now()
+            log.save(update_fields=["status", "error_output", "completed_at"])
+            logger.error("Deploy #%s could not reach Nginx; kept the new config", log.pk)
+            return log
+
         if not test.success:
             config_restore(backup_path)
             return _fail(log, test.output)
 
         reload_result = nginx_reload()
         if not reload_result.success:
-            config_restore(backup_path)
-            nginx_reload()
+            # Only roll back when the reload was actually refused. If Nginx
+            # became unreachable between the test and the reload it is not
+            # serving this configuration or any other, and the tested one is
+            # the better thing to leave on disk.
+            if reload_result.reachable:
+                config_restore(backup_path)
+                nginx_reload()
             return _fail(log, f"Reload failed: {reload_result.output}")
 
         log.status = ConfigDeployLog.Status.DEPLOYED

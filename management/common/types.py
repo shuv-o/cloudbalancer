@@ -4,9 +4,19 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class NginxTestResult:
-    """Result of running `nginx -t`."""
+    """
+    Result of running `nginx -t`, and whether it ran at all.
+
+    `reachable` exists because "Nginx says this configuration is invalid" and
+    "Nginx could not be asked" are opposite situations that both arrive as
+    success=False. Treating them alike made a deploy roll back to the previous
+    configuration whenever the gateway was down -- which is precisely when the
+    previous configuration is the one that is broken, and the newly rendered
+    one is the fix.
+    """
     success: bool
     output: str
+    reachable: bool = True
 
 
 @dataclass(frozen=True)

@@ -18,9 +18,11 @@ nobody has used. A broken selector and an idle gateway look the same from the
 browser, which is why both survived a deploy.
 
 The vocabulary below is transcribed from the exporter's own format strings in
-src/ngx_http_vhost_traffic_status_display_prometheus.h at v0.2.4, the version
+src/ngx_http_vhost_traffic_status_display_prometheus.h at v0.2.7, the version
 gateway/nginx/Dockerfile pins. Pinning the version there and the names here is
-what makes an upgrade that renames a metric fail loudly.
+what makes an upgrade that renames a metric fail loudly -- which is exactly
+how the v0.2.4 to v0.2.7 bump was checked: the newer version adds histogram
+buckets and a per-status-code counter and renames nothing the charts use.
 """
 import re
 from unittest import mock
@@ -32,8 +34,7 @@ from apps.domains.services import domain_create
 from apps.monitoring import selectors
 from apps.routing.services import rule_create
 
-# Every metric nginx-module-vts v0.2.4 emits. Histogram buckets omitted: this
-# stack does not configure them, so they never appear in a scrape.
+# Every metric nginx-module-vts v0.2.7 emits.
 VTS_METRICS = frozenset({
     "nginx_vts_info",
     "nginx_vts_start_time_seconds",
@@ -44,11 +45,18 @@ VTS_METRICS = frozenset({
     "nginx_vts_server_request_seconds_total",
     "nginx_vts_server_request_seconds",
     "nginx_vts_server_cache_total",
+    "nginx_vts_server_request_duration_seconds_bucket",
+    "nginx_vts_server_request_duration_seconds_count",
+    "nginx_vts_server_request_duration_seconds_sum",
+    "nginx_vts_status_code_requests_total",
     "nginx_vts_filter_bytes_total",
     "nginx_vts_filter_requests_total",
     "nginx_vts_filter_request_seconds_total",
     "nginx_vts_filter_request_seconds",
     "nginx_vts_filter_cache_total",
+    "nginx_vts_filter_request_duration_seconds_bucket",
+    "nginx_vts_filter_request_duration_seconds_count",
+    "nginx_vts_filter_request_duration_seconds_sum",
     "nginx_vts_upstream_bytes_total",
     "nginx_vts_upstream_requests_total",
     "nginx_vts_upstream_request_seconds_total",

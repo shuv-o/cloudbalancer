@@ -10,12 +10,12 @@
 # Built with --with-compat so the module loads into the stock binary; only the
 # module is compiled, not Nginx itself.
 # =============================================================================
-ARG NGINX_VERSION=1.27.4
+ARG NGINX_VERSION=1.30.6
 
 FROM nginx:${NGINX_VERSION}-alpine AS builder
 
 ARG NGINX_VERSION
-ARG VTS_VERSION=v0.2.4
+ARG VTS_VERSION=v0.2.7
 
 RUN apk add --no-cache \
         gcc libc-dev make linux-headers \

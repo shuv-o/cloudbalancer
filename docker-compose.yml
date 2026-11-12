@@ -82,10 +82,25 @@ services:
           cpus: "2.0"
     security_opt:
       - no-new-privileges:true
-    cap_drop: [ALL]
-    # Everything Nginx actually needs: bind the privileged ports, and change
-    # worker identity away from root once it has.
-    cap_add: [NET_BIND_SERVICE, CHOWN, SETGID, SETUID, DAC_OVERRIDE]
+    # No cap_drop here, and that is a decision rather than an oversight.
+    #
+    # It was dropped to ALL with five added back. CI builds this image and
+    # runs `nginx -t` against a rendered configuration, but `docker run` uses
+    # the default capability set -- so the restricted one was never executed
+    # anywhere before it reached a gateway carrying real traffic, where it
+    # restart-looped. nginx's master does a lot as root: binds two privileged
+    # ports, raises RLIMIT_NOFILE to 65536, writes a pid file, opens logs,
+    # chowns the cache, and changes identity for every worker. Enumerating
+    # that correctly from memory is what I tried and got wrong.
+    #
+    # The management plane is where the exposure actually is -- it renders
+    # templates, parses certificates, talks to a CA, and had the Docker
+    # socket until last week -- and it runs as uid 10001 with every
+    # capability dropped. Taking the same from nginx was worth little and
+    # cost the data plane.
+    #
+    # Re-adding it needs a test that starts this container with the
+    # restriction and watches it serve a request, not a config check.
     ports:
       - "80:80"
       - "443:443"

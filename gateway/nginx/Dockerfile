@@ -57,11 +57,18 @@ COPY reload-watcher.sh /usr/local/bin/cloudbalancer-reload-watcher.sh
 COPY docker-entrypoint.d/40-cloudbalancer-reload-watcher.sh \
      /docker-entrypoint.d/40-cloudbalancer-reload-watcher.sh
 
+# The control directory is a volume shared with the management plane, which
+# runs as uid 10001 and has to write requests into it. A named volume takes
+# its ownership from whichever image first provides the path -- if that is
+# this one, the other side gets a directory it cannot write. So it is created
+# owned by the side that cannot simply override permissions; Nginx reads and
+# writes it as root either way.
 RUN chmod +x /usr/local/bin/cloudbalancer-reload-watcher.sh \
              /docker-entrypoint.d/40-cloudbalancer-reload-watcher.sh \
     && mkdir -p /var/www/acme /var/cache/nginx /etc/nginx/ssl /etc/letsencrypt \
                 /var/run/cloudbalancer/requests /var/run/cloudbalancer/results \
-    && chown -R nginx:nginx /var/www/acme /var/cache/nginx
+    && chown -R nginx:nginx /var/www/acme /var/cache/nginx \
+    && chown -R 10001:10001 /var/run/cloudbalancer
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD nginx -t || exit 1

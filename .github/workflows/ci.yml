@@ -427,6 +427,64 @@ jobs:
             -v "$PWD/gateway/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
             cloudbalancer-nginx:ci nginx -t
 
+      - name: It also starts, under the options it is deployed with
+        run: |
+          # `nginx -t` loads the configuration and exits. It does not run the
+          # entrypoint scripts to completion, bind a port, raise a file-
+          # descriptor limit, write a pid file, or fork a worker -- and every
+          # one of those is something a container option can forbid.
+          #
+          # A capability restriction that passed `nginx -t` here and
+          # restart-looped on a gateway is why this exists. Whatever options
+          # docker-compose.yml gives this service, they are applied here, so
+          # the next one fails on a runner instead.
+          python - <<'PY' > /tmp/nginx-opts
+          import shlex, yaml
+
+          service = yaml.safe_load(open("docker-compose.yml"))["services"]["nginx"]
+          args = []
+          for option in service.get("security_opt") or []:
+              args += ["--security-opt", option]
+          for capability in service.get("cap_drop") or []:
+              args += ["--cap-drop", capability]
+          for capability in service.get("cap_add") or []:
+              args += ["--cap-add", capability]
+          if service.get("user"):
+              args += ["--user", str(service["user"])]
+          print(" ".join(shlex.quote(a) for a in args))
+          PY
+          opts=$(cat /tmp/nginx-opts)
+          echo "Starting with: ${opts:-(no extra options)}"
+
+          docker run -d --name nginx-smoke \
+            --add-host django:127.0.0.1 \
+            -v "${{ runner.temp }}/conf.d:/etc/nginx/conf.d:ro" \
+            -v "${{ runner.temp }}/ssl:${{ runner.temp }}/ssl:ro" \
+            -v "$PWD/gateway/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
+            -p 18080:8080 \
+            $opts \
+            cloudbalancer-nginx:ci
+
+          for attempt in $(seq 1 20); do
+            # The status listener, which proves a worker forked and is
+            # answering rather than that the master merely parsed a file.
+            if curl -fsS -o /dev/null http://127.0.0.1:18080/health; then
+              echo "Serving after ${attempt}s."
+              docker rm -f nginx-smoke >/dev/null
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' nginx-smoke)" != "true" ]; then
+              echo "::error::nginx exited $(docker inspect -f '{{.State.ExitCode}}' nginx-smoke)"
+              docker logs nginx-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+
+          echo "::error::nginx started but never answered on its status port."
+          docker logs nginx-smoke
+          exit 1
+
       - name: Show what was verified
         if: always()
         run: |

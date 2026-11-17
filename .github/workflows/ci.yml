@@ -521,11 +521,42 @@ jobs:
           # it could not resolve the control plane at startup, so the thing
           # worth proving is that it starts when the control plane does not
           # exist at all.
+          # A backend that announces itself, outside Nginx, so the check below
+          # proves banners are stripped from a proxied response -- not merely
+          # that Nginx never added one of its own.
+          cat > /tmp/banner_backend.py <<'PY'
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header("X-Powered-By", "PHP/8.3.36")
+                  self.send_header("X-AspNet-Version", "4.0.30319")
+                  self.send_header("X-Kept", "yes")
+                  self.send_header("Content-Length", "2")
+                  self.end_headers()
+                  self.wfile.write(b"ok")
+
+              def log_message(self, *args):
+                  pass
+
+          HTTPServer(("0.0.0.0", 18099), Handler).serve_forever()
+          PY
+          python3 /tmp/banner_backend.py &
+          cat > "${{ runner.temp }}/conf.d/zz-ci-banner.conf" <<'CONF'
+          server {
+              listen 8090;
+              location / { proxy_pass http://host.docker.internal:18099; }
+          }
+          CONF
+
           docker run -d --name nginx-smoke \
             -v "${{ runner.temp }}/conf.d:/etc/nginx/conf.d:ro" \
             -v "${{ runner.temp }}/ssl:${{ runner.temp }}/ssl:ro" \
             -v "$PWD/gateway/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
+            --add-host host.docker.internal:host-gateway \
             -p 18080:8080 \
+            -p 18090:8090 \
             $opts \
             cloudbalancer-nginx:ci
 
@@ -562,6 +593,17 @@ jobs:
                 exit 1
               fi
               echo "Branded 404 served${request_id:+ (request $request_id)}."
+
+              # Backend version banners are stripped; ordinary headers are not.
+              curl -sS -o /dev/null -D /tmp/banner-headers http://127.0.0.1:18090/
+              if grep -Eqi '^(x-powered-by|x-aspnet-version):' /tmp/banner-headers \
+                 || ! grep -qi '^x-kept: yes' /tmp/banner-headers; then
+                echo "::error::Backend banner headers were not handled as expected:"
+                cat /tmp/banner-headers
+                docker rm -f nginx-smoke >/dev/null
+                exit 1
+              fi
+              echo "Backend banners stripped."
 
               docker rm -f nginx-smoke >/dev/null
               exit 0

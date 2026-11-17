@@ -926,3 +926,62 @@ class ControlPlaneResolutionTests(TestCase):
 
     def test_no_generated_block_declares_an_upstream_for_the_control_plane(self):
         self.assertNotIn("server django:8000", self.config)
+
+
+class BrandedErrorPageTests(TestCase):
+    """
+    Every server block that answers HTTP serves CloudBalancer's error pages.
+
+    One that forgot the include would fall back to Nginx's own pages -- which
+    name Nginx -- for exactly that host, and nothing else would notice.
+    """
+
+    INCLUDE = "include /etc/nginx/snippets/cloudbalancer-errors.conf;"
+
+    def setUp(self):
+        api = backend_create(name="api-service")
+        instance_add(backend=api, address="10.0.1.11", port=8080)
+
+        plain = domain_create(name="plain.example.com")
+        secure = domain_create(name="secure.example.com")
+        secure.ssl_enabled = True
+        secure.ssl_cert_path = "/etc/letsencrypt/live/secure.example.com/fullchain.pem"
+        secure.ssl_key_path = "/etc/letsencrypt/live/secure.example.com/privkey.pem"
+        secure.save()
+        for domain in (plain, secure):
+            rule_create(domain_id=domain.id, backend_id=api.id, match_value="/", priority=10)
+
+        from apps.certificates.services import certificate_generate_self_signed
+        from apps.security.models import PanelAccessPolicy
+        from apps.security.services import policy_update
+
+        panel = domain_create(name="control.example.com")
+        certificate_generate_self_signed(domain=panel)
+        policy_update(
+            policy=PanelAccessPolicy.load(),
+            data={"panel_domain": "control.example.com", "is_published": True},
+        )
+        self.config = config_render()
+
+    def _blocks_without_the_include(self, text: str) -> int:
+        blocks = text.split("\nserver {")[1:]
+        return sum(1 for block in blocks if self.INCLUDE not in block.split("\n}\n")[0])
+
+    def test_every_domain_server_block_includes_them(self):
+        servers = self.config["20-servers.conf"]
+        self.assertEqual(servers.count("\nserver {"), 3)  # plain :80, secure :80 and :443
+        self.assertEqual(self._blocks_without_the_include(servers), 0)
+
+    def test_every_panel_server_block_includes_them(self):
+        panel = self.config["05-panel.conf"]
+        self.assertEqual(panel.count("\nserver {"), 2)
+        self.assertEqual(self._blocks_without_the_include(panel), 0)
+
+    def test_the_panel_api_keeps_its_own_json_errors(self):
+        """A local error_page is what stops the HTML pages being inherited there."""
+        self.assertIn("error_page 502 503 504 = @management_api_down;",
+                      self.config["05-panel.conf"])
+
+    def test_proxied_routes_do_not_intercept_backend_errors(self):
+        """A customer's own error pages must reach the customer's visitors."""
+        self.assertNotIn("proxy_intercept_errors", self.config["20-servers.conf"])

@@ -7,8 +7,13 @@
 # number this gateway exists to show, the module is compiled in here and
 # Prometheus scrapes Nginx directly.
 #
-# Built with --with-compat so the module loads into the stock binary; only the
-# module is compiled, not Nginx itself.
+# Also headers-more, for one reason: the Server header. Stock Nginx can only
+# drop the version from it (server_tokens off) -- "nginx" itself is hard-coded,
+# and naming it something else is an Nginx Plus feature. headers-more replaces
+# it on every response, including the error pages Nginx generates itself.
+#
+# Built with --with-compat so the modules load into the stock binary; only the
+# modules are compiled, not Nginx itself.
 # =============================================================================
 ARG NGINX_VERSION=1.30.6
 
@@ -16,6 +21,7 @@ FROM nginx:${NGINX_VERSION}-alpine AS builder
 
 ARG NGINX_VERSION
 ARG VTS_VERSION=v0.2.7
+ARG HEADERS_MORE_VERSION=v0.41
 
 RUN apk add --no-cache \
         gcc libc-dev make linux-headers \
@@ -26,16 +32,21 @@ WORKDIR /build
 
 RUN curl -fsSL "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" | tar -xz \
     && git clone --depth 1 --branch "${VTS_VERSION}" \
-        https://github.com/vozlt/nginx-module-vts.git vts
+        https://github.com/vozlt/nginx-module-vts.git vts \
+    && git clone --depth 1 --branch "${HEADERS_MORE_VERSION}" \
+        https://github.com/openresty/headers-more-nginx-module.git headers-more
 
 RUN cd "nginx-${NGINX_VERSION}" \
-    && ./configure --with-compat --add-dynamic-module=../vts \
+    && ./configure --with-compat \
+        --add-dynamic-module=../vts \
+        --add-dynamic-module=../headers-more \
     && make modules
 
 FROM nginx:${NGINX_VERSION}-alpine
 
 COPY --from=builder \
     /build/nginx-*/objs/ngx_http_vhost_traffic_status_module.so \
+    /build/nginx-*/objs/ngx_http_headers_more_filter_module.so \
     /etc/nginx/modules/
 
 # Directories shared with the management container: the ACME challenge webroot,
@@ -45,7 +56,7 @@ COPY --from=builder \
 # script for why that mattered.
 # Deliberately no `apk upgrade` here, unlike the management image.
 #
-# The traffic-status module is compiled in the builder stage against this
+# Both modules are compiled in the builder stage against this
 # exact Nginx version. An upgrade that moves Nginx even a patch release
 # makes the module binary-incompatible, and Nginx refuses to start with
 # "module is not binary compatible" -- the gateway, not the control plane.
@@ -53,6 +64,14 @@ COPY --from=builder \
 # So base-image CVEs here are fixed by raising NGINX_VERSION, which rebuilds
 # the module against the same source. CI scans this image on every run,
 # which is how we find out one is needed.
+# The branded error pages and the snippet every server block includes to use
+# them. In the image rather than mounted, so a page is there whenever the
+# config that names it is -- and so CI, which builds this image and runs
+# `nginx -t` against the repo's config, proves the include resolves.
+# Only the generated pages: generate.py is how they are made, not served.
+COPY snippets/cloudbalancer-errors.conf /etc/nginx/snippets/cloudbalancer-errors.conf
+COPY errors/*.html /usr/share/nginx/cloudbalancer-errors/
+
 COPY reload-watcher.sh /usr/local/bin/cloudbalancer-reload-watcher.sh
 COPY docker-entrypoint.d/40-cloudbalancer-reload-watcher.sh \
      /docker-entrypoint.d/40-cloudbalancer-reload-watcher.sh

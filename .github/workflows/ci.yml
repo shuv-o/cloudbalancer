@@ -346,6 +346,11 @@ jobs:
       # image.
       - uses: docker/setup-buildx-action@v3
 
+      - name: Error pages match their generator
+        # The pages are committed output. One edited by hand, or a generator
+        # change nobody re-ran, would ship something other than the source says.
+        run: python3 gateway/nginx/errors/generate.py --check
+
       - name: Build the gateway image
         uses: docker/build-push-action@v6
         with:
@@ -527,8 +532,37 @@ jobs:
           for attempt in $(seq 1 20); do
             # The status listener, which proves a worker forked and is
             # answering rather than that the master merely parsed a file.
-            if curl -fsS -o /dev/null http://127.0.0.1:18080/health; then
+            if curl -fsS -o /dev/null -D /tmp/nginx-headers http://127.0.0.1:18080/health; then
               echo "Serving after ${attempt}s."
+              # The product's name, not the software's. Checked on a live
+              # response because the directive can load and still not apply.
+              if ! grep -qi '^server: CloudBalancer' /tmp/nginx-headers; then
+                echo "::error::Server header is not CloudBalancer:"
+                grep -i '^server:' /tmp/nginx-headers || echo "(no Server header)"
+                docker rm -f nginx-smoke >/dev/null
+                exit 1
+              fi
+
+              # An error Nginx generates itself gets CloudBalancer's page:
+              # status kept, SSI run (no directive left in the body, request
+              # ID filled in), and Nginx named nowhere in it.
+              code=$(curl -sS -o /tmp/nginx-404 -D /tmp/nginx-404-headers \
+                -w '%{http_code}' http://127.0.0.1:18080/no-such-path)
+              request_id=$(grep -i '^x-request-id:' /tmp/nginx-404-headers | tr -d '\r' | awk '{print $2}')
+              problems=""
+              [ "$code" = "404" ] || problems="$problems status=$code;"
+              grep -q 'Served by CloudBalancer' /tmp/nginx-404 || problems="$problems not our page;"
+              grep -q '<!--#' /tmp/nginx-404 && problems="$problems SSI not processed;"
+              grep -qi 'nginx' /tmp/nginx-404 && problems="$problems names nginx;"
+              grep -Eq '<dd>[0-9a-f]{32}</dd>' /tmp/nginx-404 || problems="$problems no request ID;"
+              if [ -n "$problems" ]; then
+                echo "::error::Error page check failed:$problems"
+                cat /tmp/nginx-404
+                docker rm -f nginx-smoke >/dev/null
+                exit 1
+              fi
+              echo "Branded 404 served${request_id:+ (request $request_id)}."
+
               docker rm -f nginx-smoke >/dev/null
               exit 0
             fi

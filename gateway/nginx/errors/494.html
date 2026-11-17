@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>400 Request headers too large</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --ink: #14181f; --dim: #5b6472;
+  --faint: #8a93a1; --line: #e3e6eb; --accent: #2f6fed;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1116; --card: #161a21; --ink: #e8ebf0; --dim: #a3abb8;
+    --faint: #6c7584; --line: #262c36; --accent: #6e9bff;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  display: flex; align-items: center; justify-content: center; padding: 24px 16px;
+}
+main {
+  width: 100%; max-width: 480px; background: var(--card);
+  border: 1px solid var(--line); border-radius: 14px; padding: 32px 28px;
+}
+.code {
+  font: 600 0.8rem/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--accent); letter-spacing: 0.08em;
+}
+h1 { font-size: 1.45rem; letter-spacing: -0.02em; margin: 10px 0 8px; }
+p { margin: 0; color: var(--dim); }
+dl {
+  margin: 24px 0 0; padding-top: 16px; border-top: 1px solid var(--line);
+  display: grid; grid-template-columns: auto 1fr; gap: 4px 14px;
+  font-size: 0.8rem; color: var(--faint);
+}
+dd {
+  margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+footer { margin-top: 20px; font-size: 0.75rem; color: var(--faint); }
+</style>
+</head>
+<body>
+<main>
+  <div class="code">ERROR 400</div>
+  <h1>Request headers too large</h1>
+  <p>The request carried more header data than this site accepts. Clearing this site&#x27;s cookies usually fixes it.</p>
+  <dl>
+    <dt>Host</dt><dd><!--# echo var="host" default="" --></dd>
+    <dt>Request ID</dt><dd><!--# echo var="request_id" default="" --></dd>
+  </dl>
+  <footer>Served by CloudBalancer</footer>
+</main>
+</body>
+</html>

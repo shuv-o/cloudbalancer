@@ -532,6 +532,8 @@ jobs:
                   self.send_response(200)
                   self.send_header("X-Powered-By", "PHP/8.3.36")
                   self.send_header("X-AspNet-Version", "4.0.30319")
+                  self.send_header("X-Generator", "Drupal 10 (https://www.drupal.org)")
+                  self.send_header("X-Debug-Token", "a1b2c3")
                   self.send_header("X-Kept", "yes")
                   self.send_header("Content-Length", "2")
                   self.end_headers()
@@ -596,7 +598,7 @@ jobs:
 
               # Backend version banners are stripped; ordinary headers are not.
               curl -sS -o /dev/null -D /tmp/banner-headers http://127.0.0.1:18090/
-              if grep -Eqi '^(x-powered-by|x-aspnet-version):' /tmp/banner-headers \
+              if grep -Eqi '^(x-powered-by|x-aspnet-version|x-generator|x-debug-token):' /tmp/banner-headers \
                  || ! grep -qi '^x-kept: yes' /tmp/banner-headers; then
                 echo "::error::Backend banner headers were not handled as expected:"
                 cat /tmp/banner-headers

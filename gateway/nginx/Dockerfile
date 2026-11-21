@@ -15,7 +15,7 @@
 # Built with --with-compat so the modules load into the stock binary; only the
 # modules are compiled, not Nginx itself.
 # =============================================================================
-ARG NGINX_VERSION=1.30.6
+ARG NGINX_VERSION=1.30.7
 
 FROM nginx:${NGINX_VERSION}-alpine AS builder
 

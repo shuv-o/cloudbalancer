@@ -61,6 +61,27 @@ log "Deploying ${TAG}${previous:+ (currently ${previous})}"
 # while it runs, so the window where the gateway is mid-change stays short.
 # ---------------------------------------------------------------------------
 if [[ "$BUILD_LOCALLY" == true ]]; then
+    # NGINX_VERSION in .env overrides the version the Dockerfile pins, and
+    # that pin is how security fixes arrive: raising it is the whole of an
+    # Nginx CVE fix here. A server whose .env still names an older release
+    # would rebuild, report success, and keep running the vulnerable one.
+    # Refused, not warned: a warning in a deploy log is read after the fact.
+    pinned="$(sed -n 's/^ARG NGINX_VERSION=//p' gateway/nginx/Dockerfile | head -1)"
+    override=""
+    if [[ -f .env ]]; then
+        override="$(sed -n 's/^NGINX_VERSION=//p' .env | tail -1 | tr -d "\"' \r")"
+    fi
+    if [[ -n "$pinned" && -n "$override" && "$override" != "$pinned" ]]; then
+        lowest="$(printf '%s\n%s\n' "$pinned" "$override" | sort -V | head -1)"
+        if [[ "$lowest" == "$override" ]]; then
+            echo "error: .env sets NGINX_VERSION=${override}, older than the ${pinned} this" >&2
+            echo "       release pins -- it would build an Nginx missing that release's" >&2
+            echo "       security fixes. Remove the line from .env (or raise it to at" >&2
+            echo "       least ${pinned}) and deploy again." >&2
+            exit 1
+        fi
+    fi
+
     build_args=(--pull)
     cache_note="reusing cached layers"
 

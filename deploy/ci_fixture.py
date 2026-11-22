@@ -65,6 +65,11 @@ def build() -> None:
         rule_id=cached.id, backend_id=canary.id,
         header_value="canary", description="opt-in canary",
     )
+    # An upload route, larger than the gateway default.
+    rule_create(
+        domain_id=secure.id, backend_id=api.id, match_value="/upload/", priority=15,
+        max_upload_mb=256, proxy_read_timeout=300,
+    )
     rule_create(
         domain_id=secure.id, backend_id=api.id,
         match_type="exact_path", match_value="/health", priority=5,

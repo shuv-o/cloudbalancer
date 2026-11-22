@@ -54,6 +54,7 @@ interface DraftRule {
   strip_prefix: boolean;
   proxy_buffering: boolean;
   proxy_read_timeout: number;
+  max_upload_mb: number | null;
   rate_limit_enabled: boolean;
   rate_limit_rps: number;
   rate_limit_burst: number;
@@ -79,6 +80,7 @@ function blankRule(domainId: number, backendId: number): DraftRule {
     strip_prefix: false,
     proxy_buffering: true,
     proxy_read_timeout: 60,
+    max_upload_mb: null,
     rate_limit_enabled: false,
     rate_limit_rps: 100,
     rate_limit_burst: 200,
@@ -146,7 +148,8 @@ function RuleForm({
   const deliveryChanged =
     (draft.priority !== 100 ? 1 : 0) +
     (draft.proxy_read_timeout !== (draft.proxy_buffering ? 60 : 3600) ? 1 : 0) +
-    (draft.strip_prefix ? 1 : 0);
+    (draft.strip_prefix ? 1 : 0) +
+    (draft.max_upload_mb !== null ? 1 : 0);
 
   const pathProblem = validate.matchValue(
     draft.match_value,
@@ -563,6 +566,36 @@ function RuleForm({
                 }
               />
             </Field>
+
+            <Field
+              label="Largest upload (MB)"
+              help="Blank uses the gateway default of 64 MB. Raise it only on routes that take uploads; a large upload also needs the backend to finish within the wait time above."
+              error={
+                draft.max_upload_mb === null
+                  ? undefined
+                  : validate.range(draft.max_upload_mb, {
+                      low: 1,
+                      high: 10240,
+                      label: "largest upload",
+                      unit: "MB",
+                    }) ?? undefined
+              }
+            >
+              <input
+                className="input"
+                type="number"
+                min={1}
+                max={10240}
+                placeholder="64"
+                value={draft.max_upload_mb ?? ""}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    max_upload_mb: e.target.value === "" ? null : Number(e.target.value),
+                  })
+                }
+              />
+            </Field>
           </div>
 
           {draft.match_type === "path_prefix" && draft.match_value !== "/" && (
@@ -827,6 +860,7 @@ export function RoutesPage() {
                           {rule.strip_prefix && " · prefix stripped"}
                           {!rule.proxy_buffering && " · streamed"}
                           {rule.browser_cache_static && " · browsers keep static files"}
+                          {rule.max_upload_mb && ` · uploads to ${rule.max_upload_mb} MB`}
                         </div>
                       </div>
 
@@ -934,6 +968,7 @@ export function RoutesPage() {
             strip_prefix: editing.strip_prefix,
             proxy_buffering: editing.proxy_buffering,
             proxy_read_timeout: editing.proxy_read_timeout,
+            max_upload_mb: editing.max_upload_mb ?? null,
             rate_limit_enabled: editing.rate_limit_enabled,
             rate_limit_rps: editing.rate_limit_rps,
             rate_limit_burst: editing.rate_limit_burst,

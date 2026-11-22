@@ -128,6 +128,7 @@ export interface RoutingRule {
   custom_headers: Record<string, string>;
   proxy_buffering: boolean;
   proxy_read_timeout: number;
+  max_upload_mb: number | null;
   rate_limit_enabled: boolean;
   rate_limit_rps: number;
   rate_limit_burst: number;

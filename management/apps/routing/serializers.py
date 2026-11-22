@@ -59,6 +59,9 @@ class RoutingRuleInputSerializer(serializers.Serializer):
     )
     proxy_buffering = serializers.BooleanField(required=False, default=True)
     proxy_read_timeout = serializers.IntegerField(required=False, default=60, min_value=1)
+    max_upload_mb = serializers.IntegerField(
+        required=False, allow_null=True, default=None, min_value=1, max_value=10240
+    )
 
     rate_limit_enabled = serializers.BooleanField(required=False, default=False)
     rate_limit_rps = serializers.IntegerField(required=False, default=100, min_value=1)
@@ -85,7 +88,7 @@ class RoutingRuleOutputSerializer(serializers.ModelSerializer):
             "cache_ignore_upstream_control", "browser_cache_static",
             "cache_allow_authenticated",
             "strip_prefix", "custom_headers",
-            "proxy_buffering", "proxy_read_timeout",
+            "proxy_buffering", "proxy_read_timeout", "max_upload_mb",
             "rate_limit_enabled", "rate_limit_rps", "rate_limit_burst",
             "is_active", "created_at", "updated_at",
             "header_routes",

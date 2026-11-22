@@ -165,6 +165,20 @@ class RoutingRule(models.Model):
         ),
     )
 
+    # The largest request body this route accepts, in megabytes. Blank keeps
+    # the gateway-wide client_max_body_size in nginx.conf. Per route rather
+    # than raised for everyone: an upload form needs room that a login form
+    # or an API endpoint should not offer, since every byte allowed is a byte
+    # an anonymous client can make the gateway write to disk.
+    max_upload_mb = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Largest upload this route accepts, in MB. Blank uses the "
+            "gateway default (64 MB)."
+        ),
+    )
+
     # Rate limiting
     rate_limit_enabled = models.BooleanField(default=False)
     rate_limit_rps = models.IntegerField(
@@ -214,6 +228,14 @@ class RoutingRule(models.Model):
             self.proxy_read_timeout, low=1, high=86400,
             label="proxy read timeout", unit="s",
         )
+        if self.max_upload_mb is not None:
+            # 10 GB is far past any upload form, and still a bound. No
+            # "unlimited": nginx reads 0 as that, and an endpoint with no
+            # ceiling is one anyone can use to fill the gateway's disk.
+            validate_range(
+                self.max_upload_mb, low=1, high=10240,
+                label="largest upload", unit="MB",
+            )
         if self.rate_limit_enabled:
             # rate=0r/s is refused by Nginx, which fails the deploy of every
             # domain rather than just this route.

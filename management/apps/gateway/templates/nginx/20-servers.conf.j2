@@ -62,6 +62,11 @@
 {% for rule in domain.rules %}
     # {{ rule.match_value|nginx_comment }} -> {{ rule.backend_name|nginx_comment }} (priority {{ rule.priority }}{% if rule.cache_enabled %}, cached {{ rule.cache_ttl }}s{% endif %}{% if rule.header_routes %}, {{ rule.header_routes|length }} header override{{ '' if rule.header_routes|length == 1 else 's' }}{% endif %})
     location {{ rule.nginx_location }} {
+{% if rule.max_upload_mb %}
+        # Uploads up to {{ rule.max_upload_mb }} MB on this route; the rest of
+        # the gateway keeps the default in nginx.conf.
+        client_max_body_size {{ rule.max_upload_mb }}m;
+{% endif %}
 {% if rule.rate_limit_enabled %}
         limit_req        zone=rl_{{ rule.slug }} burst={{ rule.rate_limit_burst }} nodelay;
         limit_req_status 429;

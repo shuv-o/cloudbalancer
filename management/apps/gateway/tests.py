@@ -1180,3 +1180,57 @@ class BrowserCacheTests(TestCase):
                            match_value="/build/")
         rule_update(rule=rule, data={"browser_cache_static": True})
         self.assertTrue(RoutingRule.objects.get(pk=rule.pk).browser_cache_static)
+
+
+class UploadLimitTests(TestCase):
+    """Per-route upload size: larger where a form needs it, default elsewhere."""
+
+    def setUp(self):
+        self.backend = backend_create(name="app")
+        instance_add(backend=self.backend, address="10.0.1.11", port=8080)
+        self.domain = domain_create(name="research.example.com")
+
+    def _location(self, match_value="/", **kwargs) -> str:
+        rule_create(domain_id=self.domain.id, backend_id=self.backend.id,
+                    match_value=match_value, **kwargs)
+        config = config_render()["20-servers.conf"]
+        start = config.index(f"    location {match_value} {{")
+        return config[start:config.index("\n    }\n", start)]
+
+    def test_blank_keeps_the_gateway_default(self):
+        self.assertNotIn("client_max_body_size", self._location())
+
+    def test_a_route_can_take_larger_uploads(self):
+        self.assertIn("client_max_body_size 256m;", self._location(max_upload_mb=256))
+
+    def test_only_that_route_changes(self):
+        rule_create(domain_id=self.domain.id, backend_id=self.backend.id,
+                    match_value="/upload/", max_upload_mb=256)
+        config = self._location(match_value="/api/")
+        self.assertNotIn("client_max_body_size", config)
+
+    def test_out_of_range_is_refused_on_save(self):
+        from django.core.exceptions import ValidationError
+
+        for bad in (0, 10241):
+            with self.subTest(value=bad), self.assertRaises(ValidationError):
+                rule_create(domain_id=self.domain.id, backend_id=self.backend.id,
+                            match_value=f"/x{bad}/", max_upload_mb=bad)
+
+    def test_the_api_accepts_and_clears_it(self):
+        from apps.routing.models import RoutingRule
+        from apps.routing.serializers import RoutingRuleInputSerializer
+        from apps.routing.services import rule_update
+
+        rule = rule_create(domain_id=self.domain.id, backend_id=self.backend.id,
+                           match_value="/")
+        data = RoutingRuleInputSerializer(
+            data={"domain_id": self.domain.id, "backend_id": self.backend.id,
+                  "match_value": "/", "max_upload_mb": 256},
+        )
+        self.assertTrue(data.is_valid(), data.errors)
+        rule_update(rule=rule, data={"max_upload_mb": data.validated_data["max_upload_mb"]})
+        self.assertEqual(RoutingRule.objects.get(pk=rule.pk).max_upload_mb, 256)
+
+        rule_update(rule=rule, data={"max_upload_mb": None})
+        self.assertIsNone(RoutingRule.objects.get(pk=rule.pk).max_upload_mb)

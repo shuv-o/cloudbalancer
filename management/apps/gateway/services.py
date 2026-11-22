@@ -157,6 +157,7 @@ def _rule_context(rule: RoutingRule) -> dict:
         "custom_headers": rule.custom_headers or {},
         "proxy_buffering": rule.proxy_buffering,
         "proxy_read_timeout": rule.proxy_read_timeout,
+        "max_upload_mb": rule.max_upload_mb,
         "rate_limit_enabled": rule.rate_limit_enabled,
         "rate_limit_rps": rule.rate_limit_rps,
         "rate_limit_burst": rule.rate_limit_burst,

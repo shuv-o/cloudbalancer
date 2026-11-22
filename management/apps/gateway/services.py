@@ -151,6 +151,7 @@ def _rule_context(rule: RoutingRule) -> dict:
         "cache_ignore_query_string": rule.cache_ignore_query_string,
         "cache_bypass_auth": rule.cache_bypass_auth,
         "cache_ignore_upstream_control": rule.cache_ignore_upstream_control,
+        "browser_cache_static": rule.browser_cache_static,
         "cache_key_suffix": _cache_key_suffix(rule.cache_key_headers),
         "strip_prefix": rule.strip_prefix,
         "custom_headers": rule.custom_headers or {},

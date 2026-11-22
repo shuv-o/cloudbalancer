@@ -529,12 +529,31 @@ jobs:
 
           class Handler(BaseHTTPRequestHandler):
               def do_GET(self):
+                  # Two shapes from a real app, for the refused-miss counter:
+                  # a per-user page Nginx must never store, and an asset it should.
+                  if self.path.startswith("/page"):
+                      self.send_response(200)
+                      self.send_header("Content-Type", "text/html")
+                      self.send_header("Cache-Control", "no-cache, private")
+                      self.send_header("Set-Cookie", "app_session=abc; path=/; httponly")
+                      self.send_header("Content-Length", "2")
+                      self.end_headers()
+                      self.wfile.write(b"ok")
+                      return
+                  if self.path.startswith("/asset.js"):
+                      self.send_response(200)
+                      self.send_header("Content-Type", "application/javascript")
+                      self.send_header("Content-Length", "2")
+                      self.end_headers()
+                      self.wfile.write(b"ok")
+                      return
                   self.send_response(200)
                   self.send_header("X-Powered-By", "PHP/8.3.36")
                   self.send_header("X-AspNet-Version", "4.0.30319")
                   self.send_header("X-Generator", "Drupal 10 (https://www.drupal.org)")
                   self.send_header("X-Debug-Token", "a1b2c3")
                   self.send_header("X-Kept", "yes")
+                  self.send_header("Alt-Svc", 'h3=":443"; ma=2592000')
                   self.send_header("Content-Length", "2")
                   self.end_headers()
                   self.wfile.write(b"ok")
@@ -550,6 +569,25 @@ jobs:
               listen 8090;
               location / { proxy_pass http://host.docker.internal:18099; }
           }
+
+          # A caching route as 20-servers renders one, so the counter below is
+          # exercised by the real maps from 00-maps in this same directory.
+          server {
+              listen 8091;
+              server_name ci.test;
+              location / {
+                  proxy_pass http://host.docker.internal:18099;
+                  proxy_cache gateway_cache;
+                  proxy_cache_key "$scheme$host$request_uri";
+                  proxy_cache_valid 200 600s;
+                  vhost_traffic_status_filter_by_set_key $server_name host::$server_name;
+                  vhost_traffic_status_filter_by_set_key $cache_refused cache_refused::$server_name;
+                  proxy_cache_bypass $http_authorization $session_cache_bypass;
+                  proxy_no_cache $http_authorization $session_no_store;
+                  add_header X-Cache-Status $cache_status_display always;
+                  add_header Cache-Control $browser_cache_static;
+              }
+          }
           CONF
 
           docker run -d --name nginx-smoke \
@@ -559,6 +597,7 @@ jobs:
             --add-host host.docker.internal:host-gateway \
             -p 18080:8080 \
             -p 18090:8090 \
+            -p 18091:8091 \
             $opts \
             cloudbalancer-nginx:ci
 
@@ -598,7 +637,7 @@ jobs:
 
               # Backend version banners are stripped; ordinary headers are not.
               curl -sS -o /dev/null -D /tmp/banner-headers http://127.0.0.1:18090/
-              if grep -Eqi '^(x-powered-by|x-aspnet-version|x-generator|x-debug-token):' /tmp/banner-headers \
+              if grep -Eqi '^(x-powered-by|x-aspnet-version|x-generator|x-debug-token|alt-svc):' /tmp/banner-headers \
                  || ! grep -qi '^x-kept: yes' /tmp/banner-headers; then
                 echo "::error::Backend banner headers were not handled as expected:"
                 cat /tmp/banner-headers
@@ -606,6 +645,81 @@ jobs:
                 exit 1
               fi
               echo "Backend banners stripped."
+
+              # Misses the backend refused are counted, and only those: two
+              # page views (cookie + private, never storable) are refused; an
+              # asset's first miss is a real miss and its second is a hit.
+              # Then the same two, signed in: the page skips the cache
+              # (BYPASS), and the asset -- the same for everyone -- is a HIT.
+              n=0
+              for spec in /page /page /asset.js /asset.js S/page S/asset.js; do
+                n=$((n + 1))
+                cookie=""
+                case $spec in S*) spec=${spec#S}; cookie="XSRF-TOKEN=a; ugc_research_management_session=b";; esac
+                curl -sS -o /dev/null -D "/tmp/ci-$n.h" ${cookie:+-H "Cookie: $cookie"} \
+                  "http://127.0.0.1:18091$spec"
+              done
+              status() { grep -i '^x-cache-status:' "/tmp/ci-$1.h" | tr -d '\r' | awk '{print $2}'; }
+              browser() { grep -i '^cache-control:' "/tmp/ci-$1.h" | tr -d '\r' | cut -d' ' -f2-; }
+              seen="$(status 1) $(status 2) $(status 3) $(status 4) $(status 5) $(status 6)"
+              if [ "$seen" != "MISS MISS MISS HIT BYPASS HIT" ]; then
+                echo "::error::cache statuses were '$seen', expected 'MISS MISS MISS HIT BYPASS HIT'"
+                docker rm -f nginx-smoke >/dev/null
+                exit 1
+              fi
+              echo "Signed-in pages skip the cache; their static files still hit it."
+              # A year for the asset on its miss and on its hit; nothing added
+              # to the page, which sets its own Cache-Control.
+              for i in 3 4 6; do
+                if [ "$(browser $i)" != "public, max-age=31536000, immutable" ]; then
+                  echo "::error::asset response $i Cache-Control was '$(browser $i)'"
+                  docker rm -f nginx-smoke >/dev/null
+                  exit 1
+                fi
+              done
+              if [ "$(browser 1)" != "no-cache, private" ]; then
+                echo "::error::page Cache-Control was '$(browser 1)', expected the backend's own"
+                docker rm -f nginx-smoke >/dev/null
+                exit 1
+              fi
+              echo "Browsers told to keep static files; pages left alone."
+              sleep 1
+              curl -sS http://127.0.0.1:18080/status/format/json > /tmp/vts.json
+              curl -sS http://127.0.0.1:18080/status/format/prometheus > /tmp/vts.prom
+              if ! python3 - /tmp/vts.json /tmp/vts.prom <<'PY'
+          import json, sys
+
+          vts = json.load(open(sys.argv[1]))
+          prom = open(sys.argv[2]).read()
+          problems = []
+
+          groups = vts.get("filterZones", {})
+          refused = groups.get("cache_refused::ci.test", {})
+          if set(refused) != {"refused"}:
+              problems.append(f"refused filter keys are {sorted(refused)}, expected only 'refused'")
+          elif refused["refused"]["requestCounter"] != 2:
+              problems.append(f"refused count {refused['refused']['requestCounter']}, expected 2")
+
+          cache = vts["serverZones"]["ci.test"]["responses"]
+          got = (cache.get("miss"), cache.get("hit"), cache.get("bypass"))
+          if got != (3, 2, 1):
+              problems.append(f"miss/hit/bypass {got}, expected (3, 2, 1)")
+
+          # The label the dashboard's PromQL filters on.
+          want = 'nginx_vts_filter_requests_total{filter="cache_refused::ci.test",filter_name="refused",code="2xx"} 2'
+          if want not in prom:
+              problems.append("Prometheus line not found: " + want)
+              problems += [l for l in prom.splitlines() if "cache_refused" in l][:5]
+
+          for p in problems:
+              print("::error::" + p)
+          sys.exit(1 if problems else 0)
+          PY
+              then
+                docker rm -f nginx-smoke >/dev/null
+                exit 1
+              fi
+              echo "Refused misses counted apart from real ones."
 
               docker rm -f nginx-smoke >/dev/null
               exit 0

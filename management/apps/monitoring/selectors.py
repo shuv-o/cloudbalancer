@@ -74,6 +74,59 @@ def _ratio(hits: int, total: int) -> float | None:
     return round(hits / total * 100, 2) if total else None
 
 
+# The filter group the gateway counts refused misses under, one per domain.
+# See $cache_refused in the 00-maps template.
+REFUSED_FILTER_PREFIX = "cache_refused::"
+
+
+def refused_misses(raw: dict, host: str | None = None) -> int:
+    """
+    Misses the backend never let the cache keep, for one domain or all.
+
+    The traffic module reports these as MISS like any other. They are counted
+    separately by a filter keyed on $cache_refused, which is empty -- and so
+    skipped -- for everything but a refusal.
+    """
+    total = 0
+    for group, keys in (raw.get("filterZones", {}) or {}).items():
+        if not group.startswith(REFUSED_FILTER_PREFIX):
+            continue
+        if host is not None and group != REFUSED_FILTER_PREFIX + host:
+            continue
+        total += ((keys or {}).get("refused", {}) or {}).get("requestCounter", 0)
+    return total
+
+
+def cache_effectiveness(responses: dict, refused: int) -> dict:
+    """
+    The one definition of hit ratio, for the gateway and for each domain.
+
+    Served from cache is hit, stale and revalidated -- all answered without a
+    full fetch. The denominator is what the cache could have served: those,
+    plus genuine misses and expiries. Bypassed requests (authenticated ones,
+    mostly) are out, and so are refused misses: a page the backend marked
+    private or sent with a session cookie was never the cache's to keep.
+
+    Refusals are capped at the miss count. Both counters live in the same
+    shared memory and reset together, so they should agree, but a ratio over
+    100% is worse than a slightly conservative one.
+    """
+    served = (
+        responses.get("hit", 0)
+        + responses.get("stale", 0)
+        + responses.get("revalidated", 0)
+    )
+    misses = responses.get("miss", 0)
+    refused = min(max(refused, 0), misses)
+    cacheable = served + (misses - refused) + responses.get("expired", 0)
+    return {
+        "hit_ratio": _ratio(served, cacheable),
+        "served_from_cache": served,
+        "cacheable_requests": cacheable,
+        "refused_by_backend": refused,
+    }
+
+
 def _unreachable(payload: dict) -> dict:
     """
     A complete response with nothing in it.
@@ -93,10 +146,10 @@ def cache_stats() -> dict:
     """
     Cache effectiveness, live.
 
-    `hit_ratio` counts only requests the cache could have served: bypassed
-    requests (authenticated ones, mostly) are reported separately rather than
-    dragged into the denominator, where they would make a healthy cache look
-    broken.
+    `hit_ratio` counts only requests the cache could have served -- see
+    cache_effectiveness(). Bypassed requests and misses the backend refused
+    to let it keep are reported separately rather than dragged into the
+    denominator, where they would make a healthy cache look broken.
     """
     raw = vts_raw()
     if raw is None:
@@ -104,6 +157,7 @@ def cache_stats() -> dict:
             "hit_ratio": None,
             "served_from_cache": 0,
             "cacheable_requests": 0,
+            "refused_by_backend": 0,
             "bypassed": 0,
             "breakdown": {status: 0 for status in CACHE_STATUSES},
             "disk_used_bytes": 0,
@@ -127,14 +181,9 @@ def cache_stats() -> dict:
         in_bytes += zone.get("inBytes", 0)
         out_bytes += zone.get("outBytes", 0)
 
-    served_from_cache = totals["hit"] + totals["stale"] + totals["revalidated"]
-    cacheable = served_from_cache + totals["miss"] + totals["expired"]
-
     return {
         "available": True,
-        "hit_ratio": _ratio(served_from_cache, cacheable),
-        "served_from_cache": served_from_cache,
-        "cacheable_requests": cacheable,
+        **cache_effectiveness(totals, refused_misses(raw)),
         "bypassed": totals["bypass"],
         "breakdown": totals,
         "disk_used_bytes": used_size,
@@ -185,10 +234,12 @@ def traffic_stats() -> dict:
                 "5xx": responses.get("5xx", 0),
             },
             "error_rate": _ratio(errors, requests),
-            "cache_hit_ratio": _ratio(
-                responses.get("hit", 0) + responses.get("stale", 0),
-                sum(responses.get(s, 0) for s in CACHE_STATUSES),
-            ),
+            # The same definition as the gateway-wide figure. This row used
+            # to count bypassed requests and leave out revalidated ones, so a
+            # domain and the total could disagree about the same traffic.
+            "cache_hit_ratio": cache_effectiveness(
+                responses, refused_misses(raw, name)
+            )["hit_ratio"],
         })
 
     domains.sort(key=lambda d: d["requests"], reverse=True)
@@ -434,12 +485,14 @@ def traffic_series(
         upstream = 'upstream=~"' + ("|".join(upstreams) or "") + '"'
         cache_metric = "nginx_vts_server_cache_total"
         cache_scope = f'host="{host}",'
+        refused_scope = f'filter="cache_refused::{host}",'
     else:
         server = 'host!="*",host!="_"'
         upstreams = []
         upstream = ""
         cache_metric = "nginx_vts_cache_requests_total"
         cache_scope = ""
+        refused_scope = 'filter=~"cache_refused::.+",'
 
     def _range(query: str) -> list[dict]:
         return _prometheus_range(query, minutes=minutes, step=step)
@@ -469,11 +522,17 @@ def traffic_series(
             f" - {upstream_seconds}"
             f") / clamp_min({requests}, 1) * 1000"
         ),
+        # Refused misses come off the denominator, as in cache_effectiveness().
+        # `or vector(0)` because a gateway whose backends refuse nothing has
+        # no such series at all, and an absent operand empties the whole
+        # expression -- a blank chart, for the healthiest case.
         "cache_hit_ratio": _range(
             f"sum(rate({cache_metric}"
             f'{{{cache_scope}status=~"hit|stale|revalidated"}}[{window}]))'
             f" / clamp_min(sum(rate({cache_metric}"
-            f'{{{cache_scope}status=~"hit|miss|expired|stale|revalidated"}}[{window}])), 1)'
+            f'{{{cache_scope}status=~"hit|miss|expired|stale|revalidated"}}[{window}]))'
+            f" - (sum(rate(nginx_vts_filter_requests_total"
+            f'{{{refused_scope}code=~"[1-5]xx"}}[{window}])) or vector(0)), 1)'
             " * 100"
         ),
         "upstream_latency_ms": _range(

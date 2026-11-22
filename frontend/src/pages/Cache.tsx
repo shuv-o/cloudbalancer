@@ -182,9 +182,19 @@ export function Cache() {
               </div>
               <p style={{ margin: "8px 0 0", fontSize: "0.82rem", color: "var(--text-dim)" }}>
                 {compact(cache.served_from_cache)} of {compact(cache.cacheable_requests)}{" "}
-                cacheable requests. A further {compact(cache.bypassed)} were skipped on
-                purpose and are not counted here.
+                cacheable requests. Not counted: {compact(cache.bypassed)} skipped on
+                purpose, and {compact(cache.refused_by_backend ?? 0)} the backend marked
+                uncacheable.
               </p>
+              {(cache.refused_by_backend ?? 0) > cache.cacheable_requests && (
+                <p className="field__help" style={{ marginTop: 8 }}>
+                  Most traffic here is pages the backend will not let any cache keep:
+                  they set a session cookie, or say no-cache or private. That is
+                  usually correct for signed-in pages. To cache more, the
+                  application has to send cacheable headers for content that is the
+                  same for everyone.
+                </p>
+              )}
             </Panel>
 
             <Panel title="Work avoided" hint="Bytes served that a backend never had to produce">

@@ -119,6 +119,18 @@ class RoutingRule(models.Model):
             "Off by default because it overrides the backend's own judgement."
         ),
     )
+    browser_cache_static = models.BooleanField(
+        default=False,
+        help_text=(
+            "Tell browsers to keep this route's static files (scripts, "
+            "stylesheets, images, fonts) for a year, so returning visitors do "
+            "not ask for them again. Only where file names change whenever "
+            "their content does -- build output like /build/app.3f9a1c.js. On "
+            "a route serving /style.css under a fixed name, visitors would keep "
+            "the old file for a year after it changed. Left alone when the "
+            "backend sets its own Cache-Control."
+        ),
+    )
     cache_allow_authenticated = models.BooleanField(
         default=False,
         help_text=(

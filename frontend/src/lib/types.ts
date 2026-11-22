@@ -121,6 +121,7 @@ export interface RoutingRule {
   cache_bypass_auth: boolean;
   cache_key_headers: string[];
   cache_ignore_upstream_control: boolean;
+  browser_cache_static: boolean;
   cache_allow_authenticated: boolean;
   cache_min_uses: number;
   strip_prefix: boolean;
@@ -190,6 +191,8 @@ export interface CacheStats {
   hit_ratio: number | null;
   served_from_cache: number;
   cacheable_requests: number;
+  /** Misses the backend never let the cache keep: a session cookie, or no-cache/private. */
+  refused_by_backend: number;
   bypassed: number;
   breakdown: Record<string, number>;
   disk_used_bytes: number;

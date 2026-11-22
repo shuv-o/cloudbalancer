@@ -53,6 +53,121 @@ map $response_is_static $deny_dynamic_cache {
 }
 
 # ---------------------------------------------------------------------------
+# Is this a signed-in request?
+#
+# Decided by the session cookie the frameworks behind this gateway actually
+# set. Matching only cookies literally called "session" or "sessionid" missed
+# nearly all of them: Laravel names its cookie <app>_session, PHP PHPSESSID,
+# Java JSESSIONID, Express connect.sid, ASP.NET ASP.NET_SessionId, Drupal
+# SESS<hash>, Rails _<app>_session, WordPress wordpress_logged_in_<hash>. A
+# signed-in page missed by that test could be stored and served to the next
+# visitor -- the one failure a cache must never have.
+#
+# CSRF cookies are deliberately absent: Laravel's XSRF-TOKEN is set for
+# anonymous visitors too, and says nothing about who is signed in.
+# ---------------------------------------------------------------------------
+map $http_cookie $request_has_session {
+    default  "";
+    "~*(^|;\s*)(PHPSESSID|JSESSIONID|ASP\.NET_SessionId|ASPSESSIONID[A-Z]+|\.AspNetCore\.(Session|Cookies)|connect\.sid|sessionid|session|sid|_session_id|[A-Za-z0-9_.-]*[_-]session|S?SESS[0-9a-f]+|wordpress_logged_in_[A-Za-z0-9]+|wp-postpass_[A-Za-z0-9]+|remember_[A-Za-z0-9_]+)="  1;
+}
+
+# A static file by its address, for the one decision made before a response
+# exists: whether to look in the cache at all.
+map $uri $uri_is_static {
+    default  0;
+    "~*\.(css|js|mjs|map|png|jpe?g|gif|webp|avif|svg|ico|bmp|woff2?|ttf|otf|eot|mp3|mp4|webm|ogg|wasm)$"  1;
+}
+
+# Browsers send the session cookie with every request, stylesheets and
+# scripts included. Skipping the cache for all of them would send every
+# signed-in visitor's asset requests to the backend -- correct, and slow for
+# no reason, since a stylesheet is the same for everyone. So a signed-in
+# request skips the cache only for what is not a static file:
+#
+#   reading  decided on the address, the only thing known beforehand;
+#   storing  decided on what the backend actually sent.
+map "$request_has_session:$uri_is_static" $session_cache_bypass {
+    default  "";
+    "1:0"    1;
+}
+
+map "$request_has_session:$response_is_static" $session_no_store {
+    default  "";
+    "1:0"    1;
+}
+
+# ---------------------------------------------------------------------------
+# Long-lived browser caching, for routes that opt in.
+#
+# Only for static responses, and only when the backend said nothing about
+# caching itself: a backend that sets its own Cache-Control knows better
+# than the gateway does. An empty value makes add_header send nothing.
+# ---------------------------------------------------------------------------
+map "$response_is_static:$upstream_http_cache_control" $browser_cache_static {
+    default  "";
+    "1:"     "public, max-age=31536000, immutable";
+}
+
+# ---------------------------------------------------------------------------
+# Misses the cache was never allowed to turn into hits.
+#
+# The traffic module reports MISS for two different things: a response that
+# was not cached *yet*, and one that will never be cached because the backend
+# forbade it -- a page with a session cookie, or marked private or no-cache.
+# The first is the cache doing its job; the second is the backend doing its
+# job. Counted together, a Laravel or Django app whose pages are per-user
+# reads as a cache that hardly works, when every response it could have kept
+# it did.
+#
+# These maps name the second kind, so the hit ratio can leave it out of its
+# denominator. Each is "refused" only on a MISS, and empty otherwise -- and the
+# traffic module skips a filter whose key is empty, so only refusals are
+# counted. Which map a route uses depends on what it honours: a route told to
+# ignore the backend's Cache-Control does cache a no-cache page, so for it
+# that header refuses nothing.
+#
+# The conditions are Nginx's own: it will not store a response carrying
+# Set-Cookie, Vary: *, or Cache-Control no-store, no-cache, private or a zero
+# max-age.
+# ---------------------------------------------------------------------------
+map $upstream_http_cache_control $backend_cc_forbids {
+    default                                                        "";
+    "~*(no-store|no-cache|private|(^|[ ,])(s-)?max-?age=0+([ ,]|$))"  "c";
+}
+
+map $upstream_http_set_cookie $backend_sets_cookie {
+    default  "s";
+    ""       "";
+}
+
+map $upstream_http_vary $backend_varies_on_everything {
+    default  "";
+    "~^\s*\*\s*$"  "v";
+}
+
+map "$upstream_cache_status:$backend_cc_forbids$backend_sets_cookie$backend_varies_on_everything" $cache_refused {
+    default  "";
+    "~^MISS:.+"  refused;
+}
+
+map "$upstream_cache_status:$backend_sets_cookie$backend_varies_on_everything" $cache_refused_cc_ignored {
+    default  "";
+    "~^MISS:.+"  refused;
+}
+
+# Static-only routes also refuse anything that is not a static asset; that is
+# proxy_no_cache doing it, through $deny_dynamic_cache above.
+map "$upstream_cache_status:$backend_cc_forbids$backend_sets_cookie$backend_varies_on_everything$deny_dynamic_cache" $cache_refused_static {
+    default  "";
+    "~^MISS:.+"  refused;
+}
+
+map "$upstream_cache_status:$backend_sets_cookie$backend_varies_on_everything$deny_dynamic_cache" $cache_refused_static_cc_ignored {
+    default  "";
+    "~^MISS:.+"  refused;
+}
+
+# ---------------------------------------------------------------------------
 # Accept-Encoding, normalised for use in cache keys.
 #
 # Clients send dozens of spellings of the same three encodings. Keying on the

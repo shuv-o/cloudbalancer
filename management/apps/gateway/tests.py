@@ -985,3 +985,198 @@ class BrandedErrorPageTests(TestCase):
     def test_proxied_routes_do_not_intercept_backend_errors(self):
         """A customer's own error pages must reach the customer's visitors."""
         self.assertNotIn("proxy_intercept_errors", self.config["20-servers.conf"])
+
+
+class RefusedMissCounterTests(TestCase):
+    """
+    Each caching route counts the misses its backend refused, with the map
+    that matches what the route honours.
+    """
+
+    def setUp(self):
+        self.backend = backend_create(name="app")
+        instance_add(backend=self.backend, address="10.0.1.11", port=8080)
+        self.domain = domain_create(name="research.example.com")
+
+    def _location(self, **kwargs) -> str:
+        rule_create(domain_id=self.domain.id, backend_id=self.backend.id,
+                    match_value="/", **kwargs)
+        config = config_render()["20-servers.conf"]
+        start = config.index("    location / {")
+        return config[start:config.index("\n    }\n", start)]
+
+    def test_a_caching_route_counts_refusals(self):
+        location = self._location(cache_enabled=True, cache_mode="everything")
+        self.assertIn(
+            "vhost_traffic_status_filter_by_set_key $cache_refused cache_refused::$server_name;",
+            location,
+        )
+
+    def test_it_keeps_the_per_domain_counter(self):
+        """A location's filter list replaces the server's; dropping this loses the domain."""
+        self.assertIn(
+            "vhost_traffic_status_filter_by_set_key $server_name host::$server_name;",
+            self._location(cache_enabled=True),
+        )
+
+    def test_a_route_ignoring_cache_control_is_not_refused_by_it(self):
+        self.assertIn(
+            "$cache_refused_cc_ignored cache_refused::",
+            self._location(cache_enabled=True, cache_mode="everything",
+                           cache_ignore_upstream_control=True),
+        )
+
+    def test_a_static_only_route_counts_what_it_declines_to_store(self):
+        self.assertIn(
+            "$cache_refused_static cache_refused::",
+            self._location(cache_enabled=True, cache_mode="static"),
+        )
+
+    def test_both_options_together(self):
+        self.assertIn(
+            "$cache_refused_static_cc_ignored cache_refused::",
+            self._location(cache_enabled=True, cache_mode="static",
+                           cache_ignore_upstream_control=True),
+        )
+
+    def test_a_route_that_does_not_cache_counts_nothing(self):
+        self.assertNotIn("cache_refused", self._location(cache_enabled=False))
+
+    def test_every_variable_a_route_can_name_is_defined(self):
+        maps = config_render()["00-maps.conf"]
+        for name in ("$cache_refused", "$cache_refused_cc_ignored",
+                     "$cache_refused_static", "$cache_refused_static_cc_ignored"):
+            with self.subTest(name=name):
+                self.assertRegex(maps, r'map "[^"]+" \%s \{' % name)
+
+
+class SignedInRequestTests(TestCase):
+    """
+    Which requests count as signed in, and what that keeps out of the cache.
+
+    The pattern is read out of the rendered config and run here. Nginx's PCRE
+    and Python's re agree on everything it uses, so a cookie that matches
+    here matches at the gateway.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        import re as _re
+
+        maps = config_render()["00-maps.conf"]
+        block = maps[maps.index("map $http_cookie $request_has_session"):]
+        pattern = _re.search(r'"~\*(.+?)"\s+1;', block).group(1)
+        cls.session = _re.compile(pattern, _re.IGNORECASE)
+
+    def signed_in(self, cookie_header: str) -> bool:
+        return bool(self.session.search(cookie_header))
+
+    def test_the_frameworks_actually_behind_this_gateway(self):
+        for header in (
+            # The Laravel app whose pages prompted this.
+            "XSRF-TOKEN=abc; ugc_research_management_session=def",
+            "laravel_session=x",
+            "PHPSESSID=x",
+            "JSESSIONID=x",
+            "connect.sid=x",
+            "ASP.NET_SessionId=x",
+            ".AspNetCore.Cookies=x",
+            "sessionid=x",                 # Django
+            "session=x",                   # Flask
+            "_myapp_session=x",            # Rails
+            "SESS0123abcd=x",              # Drupal
+            "SSESS0123abcd=x",             # Drupal over HTTPS
+            "wordpress_logged_in_0a1b2c=x",
+            "remember_web_59ba36=x",       # Laravel "remember me"
+            "theme=dark; PHPSESSID=x; lang=en",
+        ):
+            with self.subTest(header=header):
+                self.assertTrue(self.signed_in(header))
+
+    def test_anonymous_cookies_do_not_count(self):
+        """Bypassing on these would turn the cache off for every visitor."""
+        for header in (
+            "XSRF-TOKEN=abc",
+            "theme=dark; lang=en",
+            "_ga=GA1.2.3; _gid=GA1.2.4",
+            "cookie_consent=yes",
+            "mysessionpreference=x",       # ends in "session"-ish text, no separator
+            "",
+        ):
+            with self.subTest(header=header):
+                self.assertFalse(self.signed_in(header))
+
+    def _route(self, **kwargs) -> str:
+        backend = backend_create(name="app")
+        instance_add(backend=backend, address="10.0.1.11", port=8080)
+        domain = domain_create(name="research.example.com")
+        rule_create(domain_id=domain.id, backend_id=backend.id, match_value="/",
+                    cache_enabled=True, **kwargs)
+        return config_render()["20-servers.conf"]
+
+    def test_signed_in_pages_skip_the_cache_but_static_files_do_not(self):
+        config = self._route(cache_mode="everything")
+        self.assertIn("proxy_cache_bypass $http_authorization $session_cache_bypass;", config)
+        self.assertIn("proxy_no_cache $http_authorization $session_no_store;", config)
+
+    def test_the_old_two_name_test_is_gone(self):
+        config = self._route(cache_mode="everything")
+        self.assertNotIn("$cookie_session", config)
+
+    def test_static_mode_keeps_its_own_rule_alongside(self):
+        self.assertIn(
+            "proxy_no_cache $deny_dynamic_cache $http_authorization $session_no_store;",
+            self._route(cache_mode="static"),
+        )
+
+    def test_the_exemption_maps_are_keyed_as_intended(self):
+        maps = config_render()["00-maps.conf"]
+        self.assertRegex(maps, r'map "\$request_has_session:\$uri_is_static" \$session_cache_bypass \{\s+default\s+"";\s+"1:0"\s+1;')
+        self.assertRegex(maps, r'map "\$request_has_session:\$response_is_static" \$session_no_store \{\s+default\s+"";\s+"1:0"\s+1;')
+
+
+class BrowserCacheTests(TestCase):
+    def setUp(self):
+        backend = backend_create(name="app")
+        instance_add(backend=backend, address="10.0.1.11", port=8080)
+        self.domain = domain_create(name="research.example.com")
+        self.backend = backend
+
+    def _location(self, **kwargs) -> str:
+        rule_create(domain_id=self.domain.id, backend_id=self.backend.id,
+                    match_value="/build/", **kwargs)
+        config = config_render()["20-servers.conf"]
+        start = config.index("    location /build/ {")
+        return config[start:config.index("\n    }\n", start)]
+
+    def test_off_unless_asked(self):
+        self.assertNotIn("$browser_cache_static", self._location(cache_enabled=True))
+
+    def test_on_when_asked(self):
+        self.assertIn(
+            "add_header Cache-Control  $browser_cache_static;",
+            self._location(cache_enabled=True, browser_cache_static=True),
+        )
+
+    def test_independent_of_the_gateway_cache(self):
+        self.assertIn(
+            "$browser_cache_static",
+            self._location(cache_enabled=False, browser_cache_static=True),
+        )
+
+    def test_only_static_responses_without_their_own_header(self):
+        maps = config_render()["00-maps.conf"]
+        self.assertRegex(
+            maps,
+            r'map "\$response_is_static:\$upstream_http_cache_control" \$browser_cache_static \{'
+            r'\s+default\s+"";\s+"1:"\s+"public, max-age=31536000, immutable";',
+        )
+
+    def test_it_round_trips_through_the_api(self):
+        from apps.routing.models import RoutingRule
+        from apps.routing.services import rule_update
+
+        rule = rule_create(domain_id=self.domain.id, backend_id=self.backend.id,
+                           match_value="/build/")
+        rule_update(rule=rule, data={"browser_cache_static": True})
+        self.assertTrue(RoutingRule.objects.get(pk=rule.pk).browser_cache_static)

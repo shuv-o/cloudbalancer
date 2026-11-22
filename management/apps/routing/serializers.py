@@ -50,6 +50,7 @@ class RoutingRuleInputSerializer(serializers.Serializer):
         child=serializers.CharField(max_length=64), required=False, default=list
     )
     cache_ignore_upstream_control = serializers.BooleanField(required=False, default=False)
+    browser_cache_static = serializers.BooleanField(required=False, default=False)
     cache_allow_authenticated = serializers.BooleanField(required=False, default=False)
 
     strip_prefix = serializers.BooleanField(required=False, default=False)
@@ -81,7 +82,8 @@ class RoutingRuleOutputSerializer(serializers.ModelSerializer):
             "cache_enabled", "cache_mode", "cache_ttl", "cache_bypass_auth",
             "cache_min_uses",
             "cache_ignore_query_string", "cache_key_headers",
-            "cache_ignore_upstream_control", "cache_allow_authenticated",
+            "cache_ignore_upstream_control", "browser_cache_static",
+            "cache_allow_authenticated",
             "strip_prefix", "custom_headers",
             "proxy_buffering", "proxy_read_timeout",
             "rate_limit_enabled", "rate_limit_rps", "rate_limit_burst",

@@ -48,6 +48,7 @@ interface DraftRule {
   cache_bypass_auth: boolean;
   cache_allow_authenticated: boolean;
   cache_ignore_upstream_control: boolean;
+  browser_cache_static: boolean;
   cache_key_headers: string[];
   cache_min_uses: number;
   strip_prefix: boolean;
@@ -72,6 +73,7 @@ function blankRule(domainId: number, backendId: number): DraftRule {
     cache_bypass_auth: true,
     cache_allow_authenticated: false,
     cache_ignore_upstream_control: false,
+    browser_cache_static: false,
     cache_key_headers: ["Accept-Encoding"],
     cache_min_uses: 1,
     strip_prefix: false,
@@ -135,6 +137,7 @@ function RuleForm({
     (draft.cache_min_uses !== 1 ? 1 : 0) +
     (!draft.cache_bypass_auth ? 1 : 0) +
     (draft.cache_ignore_upstream_control ? 1 : 0) +
+    (draft.browser_cache_static ? 1 : 0) +
     (draft.cache_key_headers.length ? 1 : 0);
 
   const trafficChanged =
@@ -424,6 +427,15 @@ function RuleForm({
               </Field>
             </>
           )}
+
+          {/* Outside the gateway-cache block: it is about the visitor's
+              browser, and applies whether or not the gateway caches. */}
+          <Check
+            label="Let browsers keep static files for a year"
+            help="Returning visitors stop asking for scripts, stylesheets, images and fonts they already have. Only for build output whose file names change with their content, like /build/app.3f9a1c.js. On files with fixed names such as /style.css, visitors would keep an old copy for a year after it changed. Ignored where the backend already sets Cache-Control."
+            checked={draft.browser_cache_static}
+            onChange={(v) => setDraft({ ...draft, browser_cache_static: v })}
+          />
         </Advanced>
 
         <Advanced label="Rate limiting and streaming" changed={trafficChanged}>
@@ -814,6 +826,7 @@ export function RoutesPage() {
                           {rule.match_type_label}
                           {rule.strip_prefix && " · prefix stripped"}
                           {!rule.proxy_buffering && " · streamed"}
+                          {rule.browser_cache_static && " · browsers keep static files"}
                         </div>
                       </div>
 
@@ -915,6 +928,7 @@ export function RoutesPage() {
             cache_bypass_auth: editing.cache_bypass_auth,
             cache_allow_authenticated: editing.cache_allow_authenticated,
             cache_ignore_upstream_control: editing.cache_ignore_upstream_control,
+            browser_cache_static: editing.browser_cache_static ?? false,
             cache_key_headers: editing.cache_key_headers,
             cache_min_uses: editing.cache_min_uses,
             strip_prefix: editing.strip_prefix,

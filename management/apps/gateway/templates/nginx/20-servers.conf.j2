@@ -113,6 +113,14 @@
 {% elif rule.cache_enabled %}
         # Caching: {{ "static assets only" if rule.cache_mode == "static" else "every cacheable response" }}.
         proxy_cache         gateway_cache;
+
+        # Count the misses this route could never have turned into hits -- see
+        # $cache_refused in 00-maps. A location's filter list replaces the
+        # server's rather than adding to it, so the per-domain counter is
+        # repeated here or this route would drop out of it.
+{% set refused_var = "$cache_refused" ~ ("_static" if rule.cache_mode == "static" else "") ~ ("_cc_ignored" if rule.cache_ignore_upstream_control else "") %}
+        vhost_traffic_status_filter_by_set_key $server_name host::$server_name;
+        vhost_traffic_status_filter_by_set_key {{ refused_var }} cache_refused::$server_name;
 {% if rule.cache_ignore_query_string %}
         # Keyed on the path alone. A flood carrying random query parameters
         # would otherwise miss on every request and hand the whole load to the
@@ -157,8 +165,10 @@
         # Authenticated requests reach the backend and are never stored.
         # proxy_cache_bypass on its own would still write the response into the
         # cache for the next anonymous caller, so proxy_no_cache below carries
-        # these same variables.
-        proxy_cache_bypass $http_authorization $cookie_sessionid $cookie_session;
+        # the same test. A session cookie exempts static files, which are the
+        # same for everyone -- see $session_cache_bypass in 00-maps. An
+        # Authorization header exempts nothing.
+        proxy_cache_bypass $http_authorization $session_cache_bypass;
 {% endif %}
 {% if rule.cache_mode == "static" %}
 
@@ -175,7 +185,7 @@
 {% endif %}
 {% set no_cache = [] %}
 {% if rule.cache_mode == "static" %}{% set _ = no_cache.append("$deny_dynamic_cache") %}{% endif %}
-{% if rule.cache_bypass_auth %}{% set _ = no_cache.extend(["$http_authorization", "$cookie_sessionid", "$cookie_session"]) %}{% endif %}
+{% if rule.cache_bypass_auth %}{% set _ = no_cache.extend(["$http_authorization", "$session_no_store"]) %}{% endif %}
 {% if no_cache %}
         # One directive, not several: nginx keeps only the last proxy_no_cache
         # in a context, so a second would silently discard the first.
@@ -185,6 +195,13 @@
 
         add_header X-Cache-Status $cache_status_display always;
         add_header X-Request-ID   $request_id always;
+{% if rule.browser_cache_static %}
+
+        # Browsers keep static files for a year, by request. Safe only because
+        # this route's file names change whenever their content does; see
+        # $browser_cache_static in 00-maps for what is left alone.
+        add_header Cache-Control  $browser_cache_static;
+{% endif %}
     }
 
 {% endfor %}

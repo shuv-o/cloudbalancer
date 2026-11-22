@@ -75,6 +75,27 @@ class ChannelInputSerializer(serializers.Serializer):
                     raise serializers.ValidationError(
                         {"config": f"'{address}' is not an email address."}
                     )
+        elif kind == NotificationChannel.Kind.DISCORD:
+            from apps.alerts.services import DISCORD_MENTION, DISCORD_WEBHOOK
+
+            url = str(config.get("url", "")).strip()
+            if not DISCORD_WEBHOOK.match(url):
+                raise serializers.ValidationError({
+                    "config": (
+                        "That is not a Discord webhook URL. In Discord: channel "
+                        "settings → Integrations → Webhooks → Copy Webhook URL. "
+                        "It starts https://discord.com/api/webhooks/."
+                    )
+                })
+            mention = str(config.get("mention", "") or "").strip()
+            if mention and not DISCORD_MENTION.match(mention):
+                raise serializers.ValidationError({
+                    "config": (
+                        "Mention must be @here, @everyone, a role as <@&id>, or a "
+                        "user as <@id>."
+                    )
+                })
+            attrs["config"] = {"url": url, **({"mention": mention} if mention else {})}
         else:
             url = config.get("url", "")
             if not str(url).startswith(("http://", "https://")):

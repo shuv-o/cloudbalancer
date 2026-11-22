@@ -45,6 +45,7 @@ class NotificationChannel(models.Model):
         EMAIL = "email", "Email"
         WEBHOOK = "webhook", "Webhook"
         SLACK = "slack", "Slack or Mattermost"
+        DISCORD = "discord", "Discord"
 
     name = models.CharField(max_length=100, unique=True)
     kind = models.CharField(max_length=16, choices=Kind.choices)

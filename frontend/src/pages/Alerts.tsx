@@ -86,6 +86,7 @@ function AddChannel({
     url: "",
     to: "",
     token: "",
+    mention: "",
     min_severity: "warning",
   });
   const [error, setError] = useState<string | null>(null);
@@ -96,9 +97,13 @@ function AddChannel({
     const config =
       draft.kind === "email"
         ? { to: draft.to.split(",").map((s) => s.trim()).filter(Boolean) }
-        : draft.token
-          ? { url: draft.url.trim(), token: draft.token.trim() }
-          : { url: draft.url.trim() };
+        : draft.kind === "discord"
+          ? draft.mention.trim()
+            ? { url: draft.url.trim(), mention: draft.mention.trim() }
+            : { url: draft.url.trim() }
+          : draft.token
+            ? { url: draft.url.trim(), token: draft.token.trim() }
+            : { url: draft.url.trim() };
 
     try {
       await api.post("/api/v1/alerts/channels/", {
@@ -109,7 +114,7 @@ function AddChannel({
       });
       toast(`${draft.name} added. Send it a test before relying on it.`);
       setOpen(false);
-      setDraft({ name: "", kind: "slack", url: "", to: "", token: "", min_severity: "warning" });
+      setDraft({ name: "", kind: "slack", url: "", to: "", token: "", mention: "", min_severity: "warning" });
       onAdded();
     } catch (err) {
       setError((err as ApiError).message);
@@ -171,6 +176,7 @@ function AddChannel({
                 onChange={(e) => setDraft({ ...draft, kind: e.target.value })}
               >
                 <option value="slack">Slack or Mattermost</option>
+                <option value="discord">Discord</option>
                 <option value="webhook">Webhook</option>
                 <option value="email">Email</option>
               </select>
@@ -201,16 +207,35 @@ function AddChannel({
                   help={
                     draft.kind === "slack"
                       ? "The incoming-webhook URL. Treat it as a credential — anyone holding it can post as you."
-                      : "Where to POST the alert as JSON."
+                      : draft.kind === "discord"
+                        ? "In Discord: channel settings → Integrations → Webhooks → New Webhook → Copy Webhook URL. Treat it as a credential — anyone holding it can post as you."
+                        : "Where to POST the alert as JSON."
                   }
                 >
                   <input
                     className="input input--mono"
                     value={draft.url}
-                    placeholder="https://hooks.slack.com/services/…"
+                    placeholder={
+                      draft.kind === "discord"
+                        ? "https://discord.com/api/webhooks/…"
+                        : "https://hooks.slack.com/services/…"
+                    }
                     onChange={(e) => setDraft({ ...draft, url: e.target.value })}
                   />
                 </Field>
+                {draft.kind === "discord" && (
+                  <Field
+                    label="Mention on critical alerts"
+                    help="Optional. @here, @everyone, a role as <@&role-id>, or a person as <@user-id>. Only critical alerts ping — warnings and resolutions post quietly, so nobody learns to mute the channel."
+                  >
+                    <input
+                      className="input input--mono"
+                      value={draft.mention}
+                      placeholder="@here"
+                      onChange={(e) => setDraft({ ...draft, mention: e.target.value })}
+                    />
+                  </Field>
+                )}
                 {draft.kind === "webhook" && (
                   <Field
                     label="Bearer token"
@@ -484,7 +509,7 @@ export function Alerts() {
           {channelData.channels.length === 0 ? (
             <Empty
               title="Alerts go nowhere"
-              body="Everything above is recorded and shown on this page only. Add a Slack or webhook channel so somebody hears about it without opening the panel."
+              body="Everything above is recorded and shown on this page only. Add a Discord, Slack or webhook channel so somebody hears about it without opening the panel."
             />
           ) : (
             <div className="rows">

@@ -17,6 +17,8 @@ the thing they are relying on has not worked for a week.
 import hashlib
 import json
 import logging
+import re
+import time
 
 import httpx
 from django.conf import settings
@@ -264,6 +266,8 @@ def _send(channel: NotificationChannel, alert: Alert, *, resolution: bool) -> st
         return _send_slack(channel, alert, resolution=resolution)
     if channel.kind == NotificationChannel.Kind.WEBHOOK:
         return _send_webhook(channel, alert, resolution=resolution)
+    if channel.kind == NotificationChannel.Kind.DISCORD:
+        return _send_discord(channel, alert, resolution=resolution)
     raise AlertError(f"'{channel.kind}' is not a kind of channel this can send to.")
 
 
@@ -323,6 +327,176 @@ def _send_slack(channel: NotificationChannel, alert: Alert, *, resolution: bool)
     response = httpx.post(url, json=payload, timeout=settings.ALERT_HTTP_TIMEOUT)
     response.raise_for_status()
     return f"posted, {response.status_code}"
+
+
+# ---------------------------------------------------------------------------
+# Discord
+# ---------------------------------------------------------------------------
+
+# A Discord webhook, and nothing else. Checked on save so a pasted channel
+# link or a typo fails in the form rather than during the incident it was
+# meant to report -- and so this channel can only ever post to Discord.
+DISCORD_WEBHOOK = re.compile(
+    r"^https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api(?:/v\d+)?"
+    r"/webhooks/\d{15,25}/[A-Za-z0-9_-]{30,100}/?$"
+)
+
+# Who a critical alert may ping. Anything else in the text is never a ping:
+# alert bodies quote log lines and hostnames, and an "@everyone" inside one
+# must not page the whole server.
+DISCORD_MENTION = re.compile(r"^(?:@here|@everyone|<@&\d{15,25}>|<@\d{15,25}>)$")
+
+_DISCORD_COLOUR = {
+    Severity.INFO: 0x4A90D9,
+    Severity.WARNING: 0xD9A441,
+    Severity.CRITICAL: 0xD14B4B,
+}
+_DISCORD_RESOLVED = 0x4AA564
+
+# Discord rejects the whole message if any limit is exceeded, so everything is
+# cut to fit first: a truncated alert is far better than none.
+_DISCORD_TITLE, _DISCORD_DESCRIPTION = 256, 3000
+_DISCORD_FIELD_NAME, _DISCORD_FIELD_VALUE = 64, 1000
+_DISCORD_LABEL_VALUE = 200
+# Each part has its own limit, and the embed has one over all of them
+# together: 6000 characters. Kept under it with room to spare.
+_DISCORD_EMBED_TOTAL = 5800
+
+
+def _clip(text: str, limit: int) -> str:
+    text = str(text or "")
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _discord_payload(channel: NotificationChannel, alert: Alert, *, resolution: bool) -> dict:
+    started = int(alert.started_at.timestamp())
+    fields = [
+        {"name": "Severity", "value": alert.get_severity_display(), "inline": True},
+        {"name": "Source", "value": alert.get_source_display(), "inline": True},
+        # Discord renders <t:…:R> in each reader's own time zone, as "5 minutes ago".
+        {"name": "Started", "value": f"<t:{started}:R>", "inline": True},
+    ]
+    if resolution and alert.resolved_at:
+        fields.append({
+            "name": "Lasted",
+            "value": f"{int(alert.duration_seconds // 60)} minutes",
+            "inline": True,
+        })
+    elif alert.occurrences > 1:
+        fields.append({"name": "Seen", "value": f"{alert.occurrences} times", "inline": True})
+
+    for name, value in sorted((alert.labels or {}).items())[:6]:
+        fields.append({
+            "name": _clip(name, _DISCORD_FIELD_NAME),
+            "value": _clip(f"`{value}`", _DISCORD_LABEL_VALUE),
+            "inline": True,
+        })
+    if alert.runbook and not resolution:
+        fields.append({
+            "name": "What to do",
+            "value": _clip(alert.runbook, _DISCORD_FIELD_VALUE),
+            "inline": False,
+        })
+
+    embed = {
+        "title": _clip(_subject(alert, resolution=resolution), _DISCORD_TITLE),
+        "description": _clip(alert.body, _DISCORD_DESCRIPTION),
+        "color": _DISCORD_RESOLVED if resolution else _DISCORD_COLOUR[Severity(alert.severity)],
+        "fields": fields,
+        "footer": {"text": "CloudBalancer"},
+        "timestamp": (alert.resolved_at if resolution and alert.resolved_at
+                      else alert.started_at).isoformat(),
+    }
+    if settings.ALERT_PANEL_URL:
+        embed["url"] = f"{settings.ALERT_PANEL_URL.rstrip('/')}/alerts"
+
+    # Over the total, the description gives way first -- the title, severity
+    # and labels are what someone glancing at the channel needs -- and the
+    # runbook after it.
+    def size() -> int:
+        return (len(embed["title"]) + len(embed["description"])
+                + len(embed["footer"]["text"])
+                + sum(len(f["name"]) + len(f["value"]) for f in embed["fields"]))
+
+    excess = size() - _DISCORD_EMBED_TOTAL
+    if excess > 0:
+        embed["description"] = _clip(
+            embed["description"], max(len(embed["description"]) - excess, 200)
+        )
+    excess = size() - _DISCORD_EMBED_TOTAL
+    if excess > 0 and fields[-1]["name"] == "What to do":
+        fields[-1]["value"] = _clip(fields[-1]["value"], max(len(fields[-1]["value"]) - excess, 100))
+
+    # Ping only when it matters: a critical alert starting. A resolution, or a
+    # warning, waking people up teaches them to mute the channel.
+    mention = (channel.config.get("mention") or "").strip()
+    ping = mention if (mention and not resolution
+                       and alert.severity == Severity.CRITICAL) else ""
+
+    allowed = {"parse": []}
+    if ping in ("@here", "@everyone"):
+        allowed = {"parse": ["everyone"]}
+    elif ping.startswith("<@&"):
+        allowed = {"parse": [], "roles": [ping[3:-1]]}
+    elif ping.startswith("<@"):
+        allowed = {"parse": [], "users": [ping[2:-1]]}
+
+    return {
+        "username": "CloudBalancer",
+        "content": ping,
+        "embeds": [embed],
+        "allowed_mentions": allowed,
+    }
+
+
+def _send_discord(channel: NotificationChannel, alert: Alert, *, resolution: bool) -> str:
+    url = (channel.config.get("url") or "").strip()
+    if not DISCORD_WEBHOOK.match(url):
+        raise AlertError("This Discord channel does not have a valid webhook URL.")
+
+    payload = _discord_payload(channel, alert, resolution=resolution)
+
+    # Errors are reported without the URL. httpx puts the request URL in its
+    # own exception text, a Discord webhook URL carries the token that lets
+    # anyone post as this channel, and the error is saved on the channel and
+    # shown in the panel.
+    for attempt in (1, 2):
+        try:
+            response = httpx.post(
+                url, params={"wait": "true"}, json=payload,
+                timeout=settings.ALERT_HTTP_TIMEOUT,
+            )
+        except httpx.HTTPError as exc:
+            raise AlertError(f"Discord could not be reached: {type(exc).__name__}") from None
+
+        if response.status_code == 429 and attempt == 1:
+            # Rate limited. One short wait is worth it -- an alert storm is
+            # exactly when this happens -- a long one is not: this runs in a
+            # worker other alerts are queued behind.
+            try:
+                retry_after = float(response.json().get("retry_after", 0))
+            except Exception:
+                retry_after = 0
+            if 0 < retry_after <= 5:
+                time.sleep(retry_after)
+                continue
+        break
+
+    if response.status_code in (401, 404):
+        raise AlertError(
+            f"Discord refused the webhook ({response.status_code}). It was probably "
+            "deleted or regenerated in Discord; create a new one and update this channel."
+        )
+    if response.status_code == 429:
+        raise AlertError("Discord is rate limiting this webhook; the alert was not posted.")
+    if response.status_code >= 400:
+        try:
+            reason = _clip(response.json().get("message", ""), 200)
+        except Exception:
+            reason = ""
+        raise AlertError(f"Discord rejected the message ({response.status_code}){': ' + reason if reason else ''}.")
+
+    return f"posted to Discord, {response.status_code}"
 
 
 def _send_webhook(channel: NotificationChannel, alert: Alert, *, resolution: bool) -> str:
